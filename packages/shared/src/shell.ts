@@ -515,56 +515,39 @@ export const CommandResolutionCache = Context.Reference<Map<string, CommandResol
 
 interface PathDirectoryListing {
   readonly modified: number | null | undefined;
-  /** Lowercased entry names, or undefined to probe candidates directly. */
   readonly names: ReadonlySet<string> | undefined;
 }
 
-// The directory's mtime, null when it does not exist, or undefined when it
-// cannot be read or dated (permissions, a busy share).
-const pathDirectoryModified = (directory: string) =>
+// mtime of a PATH directory; null when missing, undefined when unreadable.
+const directoryMtime = (directory: string) =>
   FileSystem.FileSystem.use((fileSystem) => fileSystem.stat(directory)).pipe(
-    Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
+    Effect.map((info) =>
+      info.type === "Directory" ? Option.getOrUndefined(info.mtime)?.getTime() : undefined,
+    ),
     Effect.catch((error) => Effect.succeed(error.reason._tag === "NotFound" ? null : undefined)),
   );
 
-// Dated before it is read, so an entry added in between shows up as a changed
-// mtime on the next check instead of hiding behind a matching one. A missing
-// directory holds nothing; one that cannot be dated or listed yields undefined
-// names so lookups probe its candidates directly.
-const listPathDirectory = (directory: string) =>
-  Effect.gen(function* (): Effect.fn.Return<PathDirectoryListing, never, FileSystem.FileSystem> {
-    const modified = yield* pathDirectoryModified(directory);
-    if (modified === null) return { modified, names: new Set() };
-    if (modified === undefined) return { modified, names: undefined };
-    const entries = yield* FileSystem.FileSystem.use((fileSystem) =>
-      fileSystem.readDirectory(directory),
-    ).pipe(Effect.orElseSucceed(() => undefined));
-    return { modified, names: entries && new Set(entries.map((entry) => entry.toLowerCase())) };
-  });
+// Dated before it is read, so an entry added in between changes the mtime seen
+// on the next check. Without names, lookups probe candidates directly.
+const listPathDirectory = Effect.fnUntraced(function* (
+  directory: string,
+): Effect.fn.Return<PathDirectoryListing, never, FileSystem.FileSystem> {
+  const modified = yield* directoryMtime(directory);
+  if (modified == null) return { modified, names: modified === null ? new Set() : undefined };
+  const entries = yield* FileSystem.FileSystem.use((fileSystem) =>
+    fileSystem.readDirectory(directory),
+  ).pipe(Effect.orElseSucceed(() => undefined));
+  return { modified, names: entries && new Set(entries.map((entry) => entry.toLowerCase())) };
+});
 
 const PathDirectoryListings = Context.Reference<
   Cache.Cache<string, PathDirectoryListing, never, FileSystem.FileSystem> | undefined
 >("@t3tools/shared/shell/PathDirectoryListings", { defaultValue: () => undefined });
 
-// Every use re-checks the directory's mtime and relists it if it changed, so a
-// command installed mid-batch is found exactly as a direct probe would find it.
-// One directory stat per lookup still replaces a stat per PATHEXT candidate.
-const readPathDirectoryNames = Effect.fn("shell.readPathDirectoryNames")(function* (
-  listings: Cache.Cache<string, PathDirectoryListing, never, FileSystem.FileSystem>,
-  directory: string,
-) {
-  const listing = yield* Cache.get(listings, directory);
-  if (listing.names === undefined) return undefined;
-  if ((yield* pathDirectoryModified(directory)) === listing.modified) return listing.names;
-  yield* Cache.invalidate(listings, directory);
-  return (yield* Cache.get(listings, directory)).names;
-});
-
 /**
- * Run a batch of command lookups (such as editor discovery) that lists each
- * PATH directory once and only probes names the listing contains, instead of
- * stat-ing every PATH x PATHEXT candidate per command. A single lookup is
- * cheaper without it.
+ * Run a batch of command lookups (e.g. editor discovery) that lists each PATH
+ * directory once, relisting it if its mtime changes, and probes only listed
+ * names instead of every PATH x PATHEXT candidate per command.
  */
 export const withPathDirectoryListings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -669,12 +652,14 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
 
   const listings = yield* PathDirectoryListings;
   for (const pathEntry of pathEntries) {
-    const names =
-      listings === undefined ? undefined : yield* readPathDirectoryNames(listings, pathEntry);
+    let listing = listings && (yield* Cache.get(listings, pathEntry));
+    if (listings && listing?.names && listing.modified !== (yield* directoryMtime(pathEntry))) {
+      yield* Cache.invalidate(listings, pathEntry);
+      listing = yield* Cache.get(listings, pathEntry);
+    }
     for (const candidate of commandCandidates) {
-      // Listings are lowercased; the stat below still checks the exact
-      // spelling for case-sensitive directories and rejects non-files.
-      if (names !== undefined && !names.has(candidate.toLowerCase())) continue;
+      // The stat below still checks exact case and rejects non-files.
+      if (listing?.names && !listing.names.has(candidate.toLowerCase())) continue;
       const candidatePath = path.join(pathEntry, candidate);
       if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
         cacheCommandResolution(cache, cacheKey, candidatePath, nowNanos);

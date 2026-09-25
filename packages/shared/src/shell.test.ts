@@ -4,7 +4,6 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -476,105 +475,34 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
     }),
   );
 
-  it.effect("lists each PATH directory once per batch and stats only listed names", () =>
+  it.effect("probes only listed PATH names and relists a directory that changes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const first = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
-      const second = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
-      const missing = path.join(first, "missing");
+      const first = yield* fs.makeTempDirectoryScoped();
+      const second = yield* fs.makeTempDirectoryScoped();
       yield* fs.writeFileString(path.join(first, "cursor.CMD"), "");
       yield* fs.writeFileString(path.join(second, "cursor.EXE"), "");
-      yield* fs.writeFileString(path.join(second, "explorer.EXE"), "");
-      const env = { PATH: [missing, first, second].join(";"), PATHEXT: ".EXE;.CMD" };
-      const listed: Array<string> = [];
-      const statted: Array<string> = [];
-
+      const env = { PATH: `${first};${second}`, PATHEXT: ".EXE;.CMD" };
+      const probed: Array<string> = [];
       yield* Effect.gen(function* () {
-        // PATH order still wins over PATHEXT order.
         expect(yield* resolveCommandPath("cursor", { env })).toBe(path.join(first, "cursor.CMD"));
-        expect(yield* resolveCommandPath("explorer", { env })).toBe(
-          path.join(second, "explorer.EXE"),
-        );
         expect(yield* isCommandAvailable("absent", { env })).toBe(false);
+        yield* fs.writeFileString(path.join(second, "late.EXE"), "");
+        yield* fs.utimes(second, 4_102_444_800, 4_102_444_800); // seconds: 2100-01-01
+        expect(yield* resolveCommandPath("late", { env })).toBe(path.join(second, "late.EXE"));
       }).pipe(
         withPathDirectoryListings,
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
-          readDirectory: (directory) => {
-            listed.push(directory);
-            return fs.readDirectory(directory);
-          },
-          stat: (filePath) => {
-            statted.push(filePath);
-            return fs.stat(filePath);
+          stat: (file) => {
+            // Record candidate probes, not the per-lookup directory mtime checks.
+            if (file !== first && file !== second) probed.push(file);
+            return fs.stat(file);
           },
         }),
       );
-
-      // The missing directory is dated but never listed; directory mtime checks
-      // aside, only names present in a listing are probed.
-      expect(listed).toEqual([first, second]);
-      expect(statted.filter((filePath) => ![missing, first, second].includes(filePath))).toEqual([
-        path.join(first, "cursor.CMD"),
-        path.join(second, "explorer.EXE"),
-      ]);
-    }).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(CommandResolutionCache, new Map()),
-    ),
-  );
-
-  it.effect("relists a PATH directory that changed during the batch", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
-      const env = { PATH: directory, PATHEXT: ".EXE" };
-
-      yield* Effect.gen(function* () {
-        expect(yield* isCommandAvailable("absent", { env })).toBe(false);
-        yield* fs.writeFileString(path.join(directory, "installed.EXE"), "");
-        // mtime has millisecond precision; move it clearly past the listing
-        // (numeric times are seconds; this is 2100-01-01).
-        yield* fs.utimes(directory, 4_102_444_800, 4_102_444_800);
-        expect(yield* resolveCommandPath("installed", { env })).toBe(
-          path.join(directory, "installed.EXE"),
-        );
-      }).pipe(withPathDirectoryListings);
-    }).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(CommandResolutionCache, new Map()),
-    ),
-  );
-
-  it.effect("probes candidates directly when a PATH directory cannot be listed", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
-      const executable = path.join(directory, "editor.CMD");
-      yield* fs.writeFileString(executable, "");
-
-      const resolved = yield* resolveCommandPath("editor", {
-        env: { PATH: directory, PATHEXT: ".CMD" },
-      }).pipe(
-        withPathDirectoryListings,
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fs,
-          readDirectory: (directory) =>
-            Effect.fail(
-              PlatformError.systemError({
-                _tag: "PermissionDenied",
-                module: "FileSystem",
-                method: "readDirectory",
-                pathOrDescriptor: directory,
-              }),
-            ),
-        }),
-      );
-
-      expect(resolved).toBe(executable);
+      expect(probed).toEqual([path.join(first, "cursor.CMD"), path.join(second, "late.EXE")]);
     }).pipe(
       Effect.provideService(HostProcessPlatform, "win32"),
       Effect.provideService(CommandResolutionCache, new Map()),

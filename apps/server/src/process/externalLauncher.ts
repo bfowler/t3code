@@ -252,9 +252,10 @@ function fileManagerCommandForPlatform(
 // so the client would see a silent no-op. Require the handler before
 // advertising the file manager on Linux.
 //
-// The probe carries its own timeout well inside the editor scan budget, so a
-// hung `xdg-mime` (broken D-Bus or desktop session) costs only the file
-// manager and the scan still completes and gets cached.
+// The probe carries its own timeout well inside the scan timeout
+// `server.getConfig` applies to editor discovery: that outer timeout degrades
+// to an empty editor list, so a hung `xdg-mime` (broken D-Bus or desktop
+// session) must cost only the file manager, not every discovered editor.
 const LINUX_DIRECTORY_HANDLER_PROBE_TIMEOUT = "2 seconds";
 
 const hasUsableLinuxDirectoryHandler = Effect.fn("externalLauncher.hasUsableLinuxDirectoryHandler")(
@@ -407,53 +408,31 @@ function buildBrowserLaunch(
   };
 }
 
-// Stop probing before server.getConfig's five-second discovery bound, which
-// would otherwise discard everything the scan had found.
-const EDITOR_SCAN_BUDGET = "4 seconds";
-
-interface EditorScan {
-  readonly editors: ReadonlyArray<EditorId>;
-  readonly complete: boolean;
-}
-
-const isEditorAvailable = Effect.fn("externalLauncher.isEditorAvailable")(function* (
-  editor: (typeof EDITORS)[number],
-  platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv,
-) {
-  if (editor.commands === null) {
-    return (yield* resolveUsableFileManagerCommand(platform, env)) !== undefined;
-  }
-  return Option.isSome(yield* resolveEditorCommand(editor, env));
-});
-
-// Editors are probed concurrently, so one stalled lookup cannot hide the rest,
-// and share PATH directory listings, so a long Windows PATH costs one listing
-// per directory rather than a stat per PATH x PATHEXT candidate per editor.
 const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors")(function* (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
-  EditorScan,
+  ReadonlyArray<EditorId>,
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const found = new Set<EditorId>();
-  const finished = yield* Effect.forEach(
-    EDITORS,
-    (editor) =>
-      isEditorAvailable(editor, platform, env).pipe(
-        Effect.map((available) => {
-          if (available) found.add(editor.id);
-        }),
-      ),
-    { concurrency: "unbounded", discard: true },
-  ).pipe(withPathDirectoryListings, Effect.timeoutOption(EDITOR_SCAN_BUDGET));
+  const available: EditorId[] = [];
 
-  return {
-    editors: EDITORS.flatMap((editor) => (found.has(editor.id) ? [editor.id] : [])),
-    complete: Option.isSome(finished),
-  };
+  for (const editor of EDITORS) {
+    if (editor.commands === null) {
+      if ((yield* resolveUsableFileManagerCommand(platform, env)) !== undefined) {
+        available.push(editor.id);
+      }
+      continue;
+    }
+
+    const command = yield* resolveEditorCommand(editor, env);
+    if (Option.isSome(command)) {
+      available.push(editor.id);
+    }
+  }
+
+  return available;
 });
 
 const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(function* (
@@ -467,7 +446,7 @@ const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(
 const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEditors")(function* () {
   const platform = yield* HostProcessPlatform;
   const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
-  return yield* buildAvailableEditors(platform, env);
+  return yield* buildAvailableEditors(platform, env).pipe(withPathDirectoryListings);
 });
 
 const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileManagerRevealKind")(
@@ -488,10 +467,8 @@ const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileMana
 // on the connection fiber under a timeout (`resolveAvailableEditorsForConfig`),
 // so one client disconnecting mid-scan would cache the interrupt and replay it
 // to every later connect for the whole TTL, breaking `server.getConfig`
-// permanently. Storing only complete scans means an interrupted or
-// out-of-budget scan leaves the cache untouched and the next connect simply
-// rescans. An incomplete scan still never hides an editor the last complete
-// scan found: running out of time is not evidence that it was uninstalled.
+// permanently. Storing only on success means an interrupted scan leaves the
+// cache untouched and the next connect simply rescans.
 // Expiry uses the monotonic clock (Clock.currentTimeNanos), matching the
 // command-resolution cache in @t3tools/shared/shell, so a backward wall-clock
 // adjustment cannot keep an expired entry alive.
@@ -792,24 +769,17 @@ export const make = Effect.gen(function* () {
     if (Option.isSome(entry) && entry.value.expiresAtNanos > nowNanos) {
       return entry.value.editors;
     }
-    const scan = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
+    const editors = yield* provideCommandResolutionServices(resolveAvailableEditors()).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
-    if (!scan.complete) {
-      const kept = new Set([
-        ...scan.editors,
-        ...Option.match(entry, { onNone: () => [], onSome: ({ editors }) => editors }),
-      ]);
-      return EDITORS.flatMap((editor) => (kept.has(editor.id) ? [editor.id] : []));
-    }
     yield* Ref.set(
       editorDiscoveryCache,
       Option.some({
-        editors: scan.editors,
+        editors,
         expiresAtNanos: nowNanos + EDITOR_DISCOVERY_CACHE_TTL_NANOS,
       }),
     );
-    return scan.editors;
+    return editors;
   });
 
   return ExternalLauncher.of({

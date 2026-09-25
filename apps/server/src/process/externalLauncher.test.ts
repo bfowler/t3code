@@ -6,12 +6,10 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -844,9 +842,10 @@ it.effect.skipIf(windowsHost)(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-// The handler probe carries its own timeout so a wedged xdg-mime costs only
-// the file manager and the scan still completes. Runs on the live clock so
-// the probe's real timeout fires.
+// The handler probe carries its own timeout because the editor scan's outer
+// timeout in server.getConfig degrades to an EMPTY editor list: a wedged
+// xdg-mime must cost only the file manager, never the other editors. Runs on
+// the live clock so the probe's real timeout fires.
 it.live.skipIf(windowsHost)("a stalled handler probe drops only the file manager", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1076,24 +1075,17 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-// Stubbed stats answer for PATH directories too, and discovery checks a
-// directory's mtime before reusing its listing, so the stub carries one.
-const stubFileInfo = {
-  type: "File",
-  mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(0))),
-} as FileSystem.File.Info;
-
 it.effect("memoizes editor discovery and refreshes after the cache window", () => {
   let statCalls = 0;
+  const fileInfo = { type: "File" } as FileSystem.File.Info;
   const launcherLayer = ExternalLauncher.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         FileSystem.layerNoop({
-          readDirectory: () => Effect.succeed(["code.CMD"]),
           stat: () =>
             Effect.sync(() => {
               statCalls += 1;
-              return stubFileInfo;
+              return fileInfo;
             }),
         }),
         Path.layer,
@@ -1148,13 +1140,13 @@ it.effect("memoizes editor discovery and refreshes after the cache window", () =
 // replayed it to every later connect for the whole TTL, so `server.getConfig`
 // failed and no client could reconnect until the server restarted.
 it.effect("rescans after an interrupted discovery instead of caching the interrupt", () => {
+  const fileInfo = { type: "File" } as FileSystem.File.Info;
   let blockFirstScan = true;
   let scans = 0;
   const launcherLayer = ExternalLauncher.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         FileSystem.layerNoop({
-          readDirectory: () => Effect.succeed(["code.CMD"]),
           // The first scan parks inside `stat` so the interrupt lands while
           // discovery is in flight, which is what a client disconnecting
           // mid-connect does to the shared effect.
@@ -1164,7 +1156,7 @@ it.effect("rescans after an interrupted discovery instead of caching the interru
               if (blockFirstScan) {
                 return yield* Effect.never;
               }
-              return stubFileInfo;
+              return fileInfo;
             }),
         }),
         Path.layer,
@@ -1203,94 +1195,6 @@ it.effect("rescans after an interrupted discovery instead of caching the interru
           }),
         ),
       ),
-    ),
-  );
-});
-
-// One Windows PATH directory listing `listed`. Every stat reports a file except
-// the ones `stalls` matches, which never resolve, like a probe wedged on a
-// slow disk or share. Each test passes its own PATH so the process-wide
-// command-resolution cache cannot leak results between tests.
-const stubbedWindowsDiscoveryLayer = (input: {
-  readonly pathDirectory: string;
-  readonly listed: ReadonlyArray<string>;
-  readonly stalls: (filePath: string) => boolean;
-  readonly onStat?: () => void;
-}) =>
-  Layer.mergeAll(
-    ExternalLauncher.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          FileSystem.layerNoop({
-            readDirectory: () => Effect.succeed([...input.listed]),
-            stat: (filePath) => {
-              input.onStat?.();
-              return input.stalls(filePath) ? Effect.never : Effect.succeed(stubFileInfo);
-            },
-          }),
-          Path.layer,
-          Layer.succeed(
-            ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() => Effect.sync(() => makeMockDetachedHandle())),
-          ),
-        ),
-      ),
-    ),
-    Layer.succeed(HostProcessPlatform, "win32"),
-    ConfigProvider.layer(
-      ConfigProvider.fromEnv({ env: { PATH: input.pathDirectory, PATHEXT: ".EXE;.CMD" } }),
-    ),
-  );
-
-it.effect("returns the editors found when one probe outlives the scan budget", () =>
-  Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    const fiber = yield* Effect.forkChild(launcher.resolveAvailableEditors());
-    yield* TestClock.adjust("4 seconds");
-
-    // Trae stalls, but the editors on either side of it, including the file
-    // manager probed last, are still reported.
-    assert.deepEqual(yield* Fiber.join(fiber), ["cursor", "file-manager"]);
-  }).pipe(
-    Effect.provide(
-      stubbedWindowsDiscoveryLayer({
-        pathDirectory: "C:\\t3-editor-scan-budget-test",
-        listed: ["cursor.EXE", "trae.EXE", "explorer.EXE"],
-        stalls: (filePath) => filePath.includes("trae"),
-      }),
-    ),
-  ),
-);
-
-it.effect("keeps editors from the last complete scan when a rescan runs out of time", () => {
-  let stallVscode = false;
-  let stats = 0;
-  return Effect.gen(function* () {
-    const launcher = yield* ExternalLauncher.ExternalLauncher;
-    assert.deepEqual(yield* launcher.resolveAvailableEditors(), ["vscode", "file-manager"]);
-
-    // Past the discovery cache window, the rescan stalls on VS Code.
-    yield* TestClock.adjust("61 seconds");
-    stallVscode = true;
-    const fiber = yield* Effect.forkChild(launcher.resolveAvailableEditors());
-    yield* TestClock.adjust("4 seconds");
-    assert.deepEqual(yield* Fiber.join(fiber), ["vscode", "file-manager"]);
-
-    // The incomplete scan was not cached, so the next call scans again.
-    stallVscode = false;
-    const statsBeforeRescan = stats;
-    assert.deepEqual(yield* launcher.resolveAvailableEditors(), ["vscode", "file-manager"]);
-    assert.isAbove(stats, statsBeforeRescan);
-  }).pipe(
-    Effect.provide(
-      stubbedWindowsDiscoveryLayer({
-        pathDirectory: "C:\\t3-editor-incomplete-rescan-test",
-        listed: ["code.CMD", "explorer.EXE"],
-        stalls: (filePath) => stallVscode && filePath.includes("code"),
-        onStat: () => {
-          stats += 1;
-        },
-      }),
     ),
   );
 });
