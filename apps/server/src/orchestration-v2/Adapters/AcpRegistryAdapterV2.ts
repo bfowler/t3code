@@ -187,7 +187,7 @@ export function makeAcpRegistryAdapterV2(options: AcpRegistryAdapterV2Options) {
           onSessionConfigurationUpdate: (configOptions, modeState) =>
             runtimeCoordinator.publishLiveConfiguration(
               options.instanceId,
-              normalizeAcpRegistryLiveConfiguration(configOptions, modeState),
+              normalizeAcpRegistryLiveConfiguration(configOptions, modeState, agentId),
             ),
           onUrlElicitation: ({ elicitationId, url, message }) => {
             const normalizedUrl = normalizeAcpRegistryWebUrl(url);

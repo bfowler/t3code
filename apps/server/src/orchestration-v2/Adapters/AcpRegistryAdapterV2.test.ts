@@ -386,7 +386,7 @@ describe("AcpRegistryAdapterV2", () => {
               setConfigMode("read-only"),
               reject("session/set_config_option", -32003, "Folder is not trusted"),
             ],
-            reason: "refused it (Folder is not trusted)",
+            reason: "refused it",
           },
           {
             name: "agent stays in its mode",
@@ -397,7 +397,7 @@ describe("AcpRegistryAdapterV2", () => {
                 configOptions: [modeOption("agent", ["read-only", "agent"])],
               }),
             ],
-            reason: "stayed in 'agent'",
+            reason: "stayed in another mode",
           },
         ] as const;
         for (const testCase of cases) {

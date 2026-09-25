@@ -2766,11 +2766,12 @@ export const make = (
             return {} satisfies EffectAcpSchema.SetSessionModeResponse;
           }
           const response = yield* setConfigOption(modeConfigOption?.id ?? "mode", modeId).pipe(
-            Effect.catchTag("AcpRequestError", (error) =>
-              modeState !== undefined && (error.code === -32601 || error.code === -32602)
-                ? setSessionMode.pipe(Effect.as(undefined))
-                : Effect.fail(error),
-            ),
+            Effect.catchTags({
+              AcpRequestError: (error) =>
+                modeState !== undefined && (error.code === -32601 || error.code === -32602)
+                  ? setSessionMode.pipe(Effect.as(undefined))
+                  : Effect.fail(error),
+            }),
           );
           if (response === undefined) {
             return {} satisfies EffectAcpSchema.SetSessionModeResponse;

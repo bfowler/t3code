@@ -26,6 +26,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 import { PtyAdapter } from "../../terminal/PtyAdapter.ts";
 import { AcpRegistryCatalog, toAcpRegistryOperationError } from "./AcpRegistrySupport.ts";
 import { parseSessionModeState } from "./AcpRuntimeModel.ts";
+import { acpRegistryHasNativePermissionModes } from "./AcpRegistryPermissionModes.ts";
 import { acpProviderOptionDescriptors } from "./AcpSessionConfig.ts";
 import { AcpRegistryRuntimeCoordinator } from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
@@ -176,7 +177,8 @@ export interface AcpRegistryLiveConfiguration {
 /** Normalizes volatile session configuration using the same bounds as discovery probes. */
 export function normalizeAcpRegistryLiveConfiguration(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-  modeState?: Parameters<typeof acpProviderOptionDescriptors>[0]["modeState"],
+  modeState: Parameters<typeof acpProviderOptionDescriptors>[0]["modeState"],
+  agentId: string,
 ): AcpRegistryLiveConfiguration {
   const modelOption = configOptions.find(
     (option) => option.category === "model" && option.type === "select",
@@ -191,7 +193,12 @@ export function normalizeAcpRegistryLiveConfiguration(
     currentModelId: models.some((model) => model.id === boundedCurrentModelId)
       ? boundedCurrentModelId
       : null,
-    configOptions: acpProviderOptionDescriptors({ configOptions, modeState }),
+    configOptions: acpProviderOptionDescriptors({
+      configOptions,
+      modeState,
+      // The thread's permission mode selects these agents' mode.
+      omitModes: acpRegistryHasNativePermissionModes(agentId),
+    }),
   };
 }
 
@@ -245,10 +252,12 @@ export function acpRegistryProbeResult(
   started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
   icon: string | null = null,
   spawn?: AcpRegistryAuthSpawnContext,
+  agentId = "",
 ): AcpRegistryProbeResult {
   const liveConfiguration = normalizeAcpRegistryLiveConfiguration(
     started.sessionSetupResult.configOptions ?? [],
     parseSessionModeState(started.sessionSetupResult),
+    agentId,
   );
   return AcpRegistryProbeResult.make({
     instanceId,
@@ -443,6 +452,7 @@ export const probeAcpRegistryConfiguration = Effect.fn("AcpRegistryProbe.probeCo
           command: result.resolved.spawn.command,
           args: result.resolved.spawn.args,
         },
+        input.settings.agentId,
       ),
       slashCommands: result.commands.slashCommands,
       skills: result.commands.skills,

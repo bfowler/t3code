@@ -20,6 +20,7 @@ import {
   logoutAcpRegistry,
   normalizeAcpRegistryAuthMethods,
   normalizeAcpRegistryCommands,
+  normalizeAcpRegistryLiveConfiguration,
   probeAcpRegistryConfiguration,
 } from "./AcpRegistryProbe.ts";
 import { AcpRegistryCatalog } from "./AcpRegistrySupport.ts";
@@ -163,6 +164,52 @@ describe("ACP Registry probe", () => {
         envVarNames: ["OPENAI_API_KEY"],
       },
     ]);
+  });
+
+  it("leaves out the mode picker for agents whose mode follows the permission mode", () => {
+    // Any config id with category "mode" is the agent's mode picker.
+    const configOptions = [
+      {
+        id: "permission-mode",
+        name: "Permission mode",
+        category: "mode",
+        type: "select",
+        currentValue: "read-only",
+        options: [
+          { value: "read-only", name: "Read-only" },
+          { value: "agent", name: "Agent" },
+        ],
+      },
+      {
+        id: "reasoning_effort",
+        name: "Reasoning",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "high", name: "High" },
+          { value: "low", name: "Low" },
+        ],
+      },
+    ] as const;
+    const modeState = {
+      currentModeId: "default",
+      availableModes: [
+        { id: "default", name: "Default" },
+        { id: "yolo", name: "YOLO" },
+      ],
+    };
+    const optionIds = (agentId: string, withConfigOptions: boolean) =>
+      normalizeAcpRegistryLiveConfiguration(
+        withConfigOptions ? configOptions : [],
+        modeState,
+        agentId,
+      ).configOptions.map((descriptor) => descriptor.id);
+
+    expect(optionIds("codex-acp", true)).toEqual(["reasoning_effort"]);
+    expect(optionIds("gemini", false)).toEqual([]);
+    expect(optionIds("fixture-agent", true)).toEqual(["permission-mode", "reasoning_effort"]);
+    expect(optionIds("fixture-agent", false)).toEqual(["_t3/session-mode"]);
   });
 
   it("falls back to model-category configuration options", () => {

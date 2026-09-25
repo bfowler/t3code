@@ -6092,22 +6092,28 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               advertisedModes === undefined ||
               advertisedModes.some((mode) => mode.id === policyMode);
             const rejection = advertised
-              ? yield* runtime.setMode(policyMode).pipe(
-                  Effect.as(undefined),
-                  Effect.catchTag("AcpRequestError", (error) => Effect.succeed(error)),
-                )
+              ? yield* runtime
+                  .setMode(policyMode)
+                  .pipe(
+                    Effect.as(undefined),
+                    Effect.catchTags({ AcpRequestError: (error) => Effect.succeed(error) }),
+                  )
               : undefined;
             const appliedModeId = (yield* runtime.getModeState)?.currentModeId;
             if (appliedModeId !== policyMode) {
               const enforcement = flavor.sessionModeEnforcesPolicy;
+              // Fixed wording: the agent's own text stays in the error cause
+              // and never reaches the message or log annotations.
               const reason = !advertised
                 ? "does not offer it"
                 : rejection !== undefined
-                  ? `refused it (${rejection.errorMessage})`
-                  : `stayed in '${appliedModeId ?? "unknown"}'`;
+                  ? "refused it"
+                  : "stayed in another mode";
               if (enforcement !== undefined && runtimePolicy.runtimeMode !== "full-access") {
                 return yield* EffectAcpErrors.AcpRequestError.internalError(
                   `${enforcement.agentName} could not switch to its '${policyMode}' mode for this thread's permission mode: it ${reason}. Choose another permission mode or update the agent.`,
+                  undefined,
+                  rejection === undefined ? {} : { cause: rejection },
                 );
               }
               yield* Effect.logWarning(
@@ -6117,8 +6123,8 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                   sessionId: startResult.sessionId,
                   runtimeMode: runtimePolicy.runtimeMode,
                   expectedModeId: policyMode,
-                  appliedModeId,
                   reason,
+                  ...(rejection === undefined ? {} : { rejectionCode: rejection.code }),
                 },
               );
             }

@@ -61,6 +61,11 @@ function selectChoices(
 export function acpProviderOptionDescriptors(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined;
   readonly modeState: AcpSessionModeState | undefined;
+  /**
+   * Leaves out the agent's mode picker (`category: "mode"` options and the
+   * synthetic modes descriptor) when the thread's runtime mode selects it.
+   */
+  readonly omitModes?: boolean;
 }): ReadonlyArray<ProviderOptionDescriptor> {
   const descriptors: Array<ProviderOptionDescriptor> = [];
   const seen = new Set<string>();
@@ -70,7 +75,11 @@ export function acpProviderOptionDescriptors(input: {
   for (const option of input.configOptions ?? []) {
     // "model" options surface as the model list; "collaboration_mode" options
     // are driven by T3's own plan/build interaction mode in the ACP adapter.
-    if (option.category === "model" || option.category === "collaboration_mode") {
+    if (
+      option.category === "model" ||
+      option.category === "collaboration_mode" ||
+      (input.omitModes === true && option.category === "mode")
+    ) {
       continue;
     }
     const id = boundedOpaqueValue(option.id, MAX_TEXT_LENGTH);
@@ -114,7 +123,7 @@ export function acpProviderOptionDescriptors(input: {
   }
 
   const modeState = input.modeState;
-  if (modeState !== undefined && !hasModeCategory) {
+  if (modeState !== undefined && !hasModeCategory && input.omitModes !== true) {
     const choices = selectChoices(
       modeState.availableModes.map((mode) => ({
         value: mode.id,

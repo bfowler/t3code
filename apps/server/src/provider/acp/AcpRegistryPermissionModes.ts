@@ -1,6 +1,4 @@
-import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
-
-import { ACP_SESSION_MODE_OPTION_ID } from "./AcpSessionConfig.ts";
+import type { RuntimeMode } from "@t3tools/contracts";
 
 interface AcpRegistryPermissionModes {
   /** Name used in messages when the agent refuses a mode. */
@@ -92,12 +90,4 @@ export function acpRegistryPermissionMode(
   return entry === undefined
     ? undefined
     : { agentName: entry.name, modeId: entry.modes[runtimeMode] };
-}
-
-/**
- * The agent's permission-mode picker: the synthetic descriptor for modes set
- * through `session/set_mode`, or the `mode` config option.
- */
-export function acpRegistryIsModeOptionDescriptor(descriptor: ProviderOptionDescriptor): boolean {
-  return descriptor.id === ACP_SESSION_MODE_OPTION_ID || descriptor.id === "mode";
 }
