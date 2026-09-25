@@ -534,7 +534,10 @@ const PathDirectoryListings = Context.Reference<
  * Run a batch of command lookups (such as editor discovery) that lists each
  * PATH directory once and only probes names the listing contains, instead of
  * stat-ing every PATH x PATHEXT candidate per command. A single lookup is
- * cheaper without it. Each run lists afresh, so later batches see new installs.
+ * cheaper without it. Listings are a snapshot for the run: a command installed
+ * into a directory after the run listed it is missed until the next run, and
+ * that miss is cached like any other. Accepted for the tens of thousands of
+ * stats this saves on long Windows PATHs.
  */
 export const withPathDirectoryListings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
