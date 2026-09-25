@@ -4,6 +4,7 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -25,6 +26,7 @@ import {
   resolveWindowsEnvironment,
   SpawnExecutableResolution,
   WindowsShellEnvironment,
+  withPathDirectoryListings,
   type WindowsShellEnvironmentReader,
 } from "./shell.ts";
 
@@ -472,6 +474,83 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
       expect(probed.filter((filePath) => /\.(COM|EXE|BAT|CMD)$/.test(filePath))).toHaveLength(4);
       expect(probed.filter((filePath) => /\.(com|exe|bat|cmd)$/.test(filePath))).toHaveLength(4);
     }),
+  );
+
+  it.effect("lists each PATH directory once per batch and stats only listed names", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const first = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
+      const second = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
+      const missing = path.join(first, "missing");
+      yield* fs.writeFileString(path.join(first, "cursor.CMD"), "");
+      yield* fs.writeFileString(path.join(second, "cursor.EXE"), "");
+      yield* fs.writeFileString(path.join(second, "explorer.EXE"), "");
+      const env = { PATH: [missing, first, second].join(";"), PATHEXT: ".EXE;.CMD" };
+      const listed: Array<string> = [];
+      const statted: Array<string> = [];
+
+      yield* Effect.gen(function* () {
+        // PATH order still wins over PATHEXT order.
+        expect(yield* resolveCommandPath("cursor", { env })).toBe(path.join(first, "cursor.CMD"));
+        expect(yield* resolveCommandPath("explorer", { env })).toBe(
+          path.join(second, "explorer.EXE"),
+        );
+        expect(yield* isCommandAvailable("absent", { env })).toBe(false);
+      }).pipe(
+        withPathDirectoryListings,
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readDirectory: (directory) => {
+            listed.push(directory);
+            return fs.readDirectory(directory);
+          },
+          stat: (filePath) => {
+            statted.push(filePath);
+            return fs.stat(filePath);
+          },
+        }),
+      );
+
+      expect(listed).toEqual([missing, first, second]);
+      expect(statted).toEqual([path.join(first, "cursor.CMD"), path.join(second, "explorer.EXE")]);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(CommandResolutionCache, new Map()),
+    ),
+  );
+
+  it.effect("probes candidates directly when a PATH directory cannot be listed", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
+      const executable = path.join(directory, "editor.CMD");
+      yield* fs.writeFileString(executable, "");
+
+      const resolved = yield* resolveCommandPath("editor", {
+        env: { PATH: directory, PATHEXT: ".CMD" },
+      }).pipe(
+        withPathDirectoryListings,
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readDirectory: (directory) =>
+            Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "readDirectory",
+                pathOrDescriptor: directory,
+              }),
+            ),
+        }),
+      );
+
+      expect(resolved).toBe(executable);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(CommandResolutionCache, new Map()),
+    ),
   );
 });
 

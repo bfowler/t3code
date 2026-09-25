@@ -3,6 +3,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -511,6 +512,40 @@ export const CommandResolutionCache = Context.Reference<Map<string, CommandResol
   },
 );
 
+// A missing directory holds nothing. Any other listing failure (permissions, a
+// busy share) yields undefined so lookups probe that directory's candidates
+// directly, since a known file can still be reachable there.
+const listPathDirectory = (directory: string) =>
+  FileSystem.FileSystem.use((fileSystem) => fileSystem.readDirectory(directory)).pipe(
+    Effect.map(
+      (entries): ReadonlySet<string> | undefined =>
+        new Set(entries.map((entry) => entry.toLowerCase())),
+    ),
+    Effect.catch((error) =>
+      Effect.succeed(error.reason._tag === "NotFound" ? new Set<string>() : undefined),
+    ),
+  );
+
+const PathDirectoryListings = Context.Reference<
+  Cache.Cache<string, ReadonlySet<string> | undefined, never, FileSystem.FileSystem> | undefined
+>("@t3tools/shared/shell/PathDirectoryListings", { defaultValue: () => undefined });
+
+/**
+ * Run a batch of command lookups (such as editor discovery) that lists each
+ * PATH directory once and only probes names the listing contains, instead of
+ * stat-ing every PATH x PATHEXT candidate per command. A single lookup is
+ * cheaper without it. Each run lists afresh, so later batches see new installs.
+ */
+export const withPathDirectoryListings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const listings = yield* Cache.make({
+      capacity: 1024,
+      lookup: listPathDirectory,
+      requireServicesAt: "lookup",
+    });
+    return yield* effect.pipe(Effect.provideService(PathDirectoryListings, listings));
+  });
+
 function cacheCommandResolution(
   cache: Map<string, CommandResolutionCacheEntry>,
   cacheKey: string,
@@ -602,8 +637,13 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     pathEntries.push(pathEntry);
   }
 
+  const listings = yield* PathDirectoryListings;
   for (const pathEntry of pathEntries) {
+    const names = listings === undefined ? undefined : yield* Cache.get(listings, pathEntry);
     for (const candidate of commandCandidates) {
+      // Listings are lowercased; the stat below still checks the exact
+      // spelling for case-sensitive directories and rejects non-files.
+      if (names !== undefined && !names.has(candidate.toLowerCase())) continue;
       const candidatePath = path.join(pathEntry, candidate);
       if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
         cacheCommandResolution(cache, cacheKey, candidatePath, nowNanos);
