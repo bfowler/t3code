@@ -6,10 +6,12 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -1074,9 +1076,15 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+// Stubbed stats answer for PATH directories too, and discovery checks a
+// directory's mtime before reusing its listing, so the stub carries one.
+const stubFileInfo = {
+  type: "File",
+  mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(0))),
+} as FileSystem.File.Info;
+
 it.effect("memoizes editor discovery and refreshes after the cache window", () => {
   let statCalls = 0;
-  const fileInfo = { type: "File" } as FileSystem.File.Info;
   const launcherLayer = ExternalLauncher.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -1085,7 +1093,7 @@ it.effect("memoizes editor discovery and refreshes after the cache window", () =
           stat: () =>
             Effect.sync(() => {
               statCalls += 1;
-              return fileInfo;
+              return stubFileInfo;
             }),
         }),
         Path.layer,
@@ -1140,7 +1148,6 @@ it.effect("memoizes editor discovery and refreshes after the cache window", () =
 // replayed it to every later connect for the whole TTL, so `server.getConfig`
 // failed and no client could reconnect until the server restarted.
 it.effect("rescans after an interrupted discovery instead of caching the interrupt", () => {
-  const fileInfo = { type: "File" } as FileSystem.File.Info;
   let blockFirstScan = true;
   let scans = 0;
   const launcherLayer = ExternalLauncher.layer.pipe(
@@ -1157,7 +1164,7 @@ it.effect("rescans after an interrupted discovery instead of caching the interru
               if (blockFirstScan) {
                 return yield* Effect.never;
               }
-              return fileInfo;
+              return stubFileInfo;
             }),
         }),
         Path.layer,
@@ -1218,9 +1225,7 @@ const stubbedWindowsDiscoveryLayer = (input: {
             readDirectory: () => Effect.succeed([...input.listed]),
             stat: (filePath) => {
               input.onStat?.();
-              return input.stalls(filePath)
-                ? Effect.never
-                : Effect.succeed({ type: "File" } as FileSystem.File.Info);
+              return input.stalls(filePath) ? Effect.never : Effect.succeed(stubFileInfo);
             },
           }),
           Path.layer,

@@ -512,8 +512,36 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
         }),
       );
 
-      expect(listed).toEqual([missing, first, second]);
-      expect(statted).toEqual([path.join(first, "cursor.CMD"), path.join(second, "explorer.EXE")]);
+      // The missing directory is dated but never listed; directory mtime checks
+      // aside, only names present in a listing are probed.
+      expect(listed).toEqual([first, second]);
+      expect(statted.filter((filePath) => ![missing, first, second].includes(filePath))).toEqual([
+        path.join(first, "cursor.CMD"),
+        path.join(second, "explorer.EXE"),
+      ]);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(CommandResolutionCache, new Map()),
+    ),
+  );
+
+  it.effect("relists a PATH directory that changed during the batch", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-path-listing-" });
+      const env = { PATH: directory, PATHEXT: ".EXE" };
+
+      yield* Effect.gen(function* () {
+        expect(yield* isCommandAvailable("absent", { env })).toBe(false);
+        yield* fs.writeFileString(path.join(directory, "installed.EXE"), "");
+        // mtime has millisecond precision; move it clearly past the listing
+        // (numeric times are seconds; this is 2100-01-01).
+        yield* fs.utimes(directory, 4_102_444_800, 4_102_444_800);
+        expect(yield* resolveCommandPath("installed", { env })).toBe(
+          path.join(directory, "installed.EXE"),
+        );
+      }).pipe(withPathDirectoryListings);
     }).pipe(
       Effect.provideService(HostProcessPlatform, "win32"),
       Effect.provideService(CommandResolutionCache, new Map()),
