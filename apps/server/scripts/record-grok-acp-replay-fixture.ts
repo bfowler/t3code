@@ -33,7 +33,7 @@ import {
 import { ACP_PROTOCOL } from "../src/orchestration-v2/Adapters/AcpAdapterV2.ts";
 import * as IdAllocator from "../src/orchestration-v2/IdAllocator.ts";
 import type { ProviderAdapterV2SessionRuntime } from "../src/orchestration-v2/ProviderAdapter.ts";
-import { ProviderContinuationRequests } from "../src/orchestration-v2/ProviderContinuationRequests.ts";
+import * as ProviderContinuationRequests from "../src/orchestration-v2/ProviderContinuationRequests.ts";
 import * as ProviderAdapterRegistry from "../src/orchestration-v2/ProviderAdapterRegistry.ts";
 import { provideDeterministicTestRuntime } from "../src/orchestration-v2/testkit/DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fixtures/index.ts";
@@ -453,7 +453,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig: yield* ServerConfig,
         selfInvocation: yield* resolveSelfInvocation(),
-        continuationRequests: yield* ProviderContinuationRequests,
+        continuationRequests: yield* ProviderContinuationRequests.ProviderContinuationRequests,
         // Production's runtime factory, with the protocol logger teeing raw lines.
         makeRuntime: (input) =>
           makeGrokAcpRuntime({

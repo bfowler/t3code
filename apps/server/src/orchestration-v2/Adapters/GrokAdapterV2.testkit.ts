@@ -14,7 +14,7 @@ import { ServerConfig } from "../../config.ts";
 import { GROK_ACP_CANCEL_META } from "../../provider/acp/GrokAcpSupport.ts";
 import { makeXAiPromptCompletionRuntime } from "../../provider/acp/XAiAcpExtension.ts";
 import { layer as idAllocatorLayer, IdAllocatorV2 } from "../IdAllocator.ts";
-import { ProviderContinuationRequests } from "../ProviderContinuationRequests.ts";
+import * as ProviderContinuationRequests from "../ProviderContinuationRequests.ts";
 import { makeLayerEffect as makeProviderAdapterRegistryLayerEffect } from "../ProviderAdapterRegistry.ts";
 import type { ProviderReplayGate } from "../testkit/ProviderReplayGate.testkit.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
@@ -49,7 +49,7 @@ function makeGrokProviderAdapterRegistryReplayLayer(
       const idAllocator = yield* IdAllocatorV2;
       const serverConfig = yield* ServerConfig;
       // Same queue the continuation worker drains when the fixture runs it.
-      const continuationRequests = yield* ProviderContinuationRequests;
+      const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
       const replayGate = options.replayGate;
       const replayDir = yield* fileSystem
         .makeTempDirectory({
