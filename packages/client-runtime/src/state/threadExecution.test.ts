@@ -2,6 +2,7 @@ import {
   TurnItemId,
   NodeId,
   MessageId,
+  ProviderInstanceId,
   RunId,
   ThreadId,
   type OrchestrationV2ExecutionNode,
@@ -14,6 +15,7 @@ import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
+  formatModelSelectionEffort,
   formatProviderSubagentStatus,
   deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
@@ -298,6 +300,54 @@ describe("deriveProviderSubagentStatus", () => {
   it("leaves T3 delegated tasks and ordinary threads alone", () => {
     expect(deriveProviderSubagentStatus(child("mcp"))).toBeNull();
     expect(deriveProviderSubagentStatus({ ...v2Projection, nodes: [root] })).toBeNull();
+  });
+});
+
+describe("formatModelSelectionEffort", () => {
+  const instanceId = ProviderInstanceId.make("claudeAgent");
+  const selection = (options?: ReadonlyArray<{ id: string; value: string }>) => ({
+    instanceId,
+    model: "claude-sonnet-5",
+    ...(options === undefined ? {} : { options }),
+  });
+  const models = [
+    {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Reasoning",
+            type: "select" as const,
+            options: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High" },
+            ],
+          },
+        ],
+      },
+    },
+  ];
+
+  it("names the effort the way the provider's catalog does", () => {
+    expect(formatModelSelectionEffort(selection([{ id: "effort", value: "xhigh" }]), models)).toBe(
+      "Extra High",
+    );
+  });
+
+  it("capitalizes an effort the catalog does not describe", () => {
+    expect(
+      formatModelSelectionEffort(selection([{ id: "reasoningEffort", value: "medium" }])),
+    ).toBe("Medium");
+  });
+
+  it("shows nothing when the selection carries no effort", () => {
+    expect(formatModelSelectionEffort(selection())).toBeNull();
+    expect(
+      formatModelSelectionEffort(selection([{ id: "contextWindow", value: "1m" }])),
+    ).toBeNull();
   });
 });
 

@@ -30,7 +30,10 @@ import {
 } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
-import type { ProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  formatModelSelectionEffort,
+  type ProviderSubagentStatus,
+} from "@t3tools/client-runtime/state/thread-execution";
 import { formatModelSlugName } from "@t3tools/shared/model";
 import { isProviderNativeSubagentThread } from "@t3tools/contracts";
 import type { QueuedRunEdit } from "../../state/queued-run-edit";
@@ -737,6 +740,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const layoutVariant = props.layoutVariant ?? "compact";
   const isSplitLayout = layoutVariant === "split";
   const contentMaxWidth = isSplitLayout ? CHAT_CONTENT_MAX_WIDTH : undefined;
+  const providerSubagentProvider = props.serverConfig?.providers.find(
+    (provider) => provider.instanceId === props.selectedThread.modelSelection.instanceId,
+  );
+  const providerSubagentCatalogModel = providerSubagentProvider?.models.find(
+    (model) => model.slug === props.selectedThread.modelSelection.model,
+  );
   const workspaceContentWidth = useWorkspaceContentWidth();
   const composerWidthStyle = useAnimatedStyle(() =>
     isSplitLayout && workspaceContentWidth !== null
@@ -1231,7 +1240,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     }}
                   >
                     <ProviderSubagentBar
-                      modelLabel={formatModelSlugName(props.selectedThread.modelSelection.model)}
+                      provider={providerSubagentProvider ?? null}
+                      modelLabel={
+                        providerSubagentCatalogModel?.name ??
+                        formatModelSlugName(props.selectedThread.modelSelection.model)
+                      }
+                      effortLabel={formatModelSelectionEffort(
+                        props.selectedThread.modelSelection,
+                        providerSubagentProvider?.models,
+                      )}
                       status={props.providerSubagentStatus ?? null}
                       onOpenParent={
                         props.selectedThread.lineage.parentThreadId === null

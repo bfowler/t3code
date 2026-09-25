@@ -5,10 +5,13 @@ import {
 import {
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
+  type ModelSelection,
+  type ServerProviderModel,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 
@@ -110,6 +113,34 @@ export function deriveProviderSubagentStatus(
     startedAt: node.startedAt === null ? null : DateTime.formatIso(node.startedAt),
     completedAt: node.completedAt === null ? null : DateTime.formatIso(node.completedAt),
   };
+}
+
+// Option ids providers use for reasoning effort (Codex, Claude, Grok/ACP, OpenCode).
+const REASONING_EFFORT_OPTION_IDS = ["reasoningEffort", "effort", "reasoning", "variant"] as const;
+
+/**
+ * The reasoning effort a thread's model runs at, as the composer names it:
+ * the provider's option label when its catalog describes the option, else
+ * the raw value capitalized. Null when the selection carries no effort (a
+ * subagent on a different model than its parent reports none).
+ */
+export function formatModelSelectionEffort(
+  selection: ModelSelection,
+  models: ReadonlyArray<ServerProviderModel> = [],
+): string | null {
+  for (const id of REASONING_EFFORT_OPTION_IDS) {
+    const value = getModelSelectionStringOptionValue(selection, id)?.trim();
+    if (!value) continue;
+    const descriptor = models
+      .find((model) => model.slug === selection.model)
+      ?.capabilities?.optionDescriptors?.find((candidate) => candidate.id === id);
+    const label =
+      descriptor?.type === "select"
+        ? descriptor.options.find((option) => option.id === value)?.label
+        : undefined;
+    return label ?? `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+  }
+  return null;
 }
 
 const SUBAGENT_STATUS_LABELS: Record<OrchestrationV2ExecutionNode["status"], string> = {

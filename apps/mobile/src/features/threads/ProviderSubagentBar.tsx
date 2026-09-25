@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
+import { ProviderIcon } from "../../components/ProviderIcon";
 import { RequestActionButton } from "./RequestActionButton";
 
 /**
@@ -15,7 +16,11 @@ import { RequestActionButton } from "./RequestActionButton";
  * model is working, for how long, and leads back to the parent.
  */
 export function ProviderSubagentBar(props: {
+  /** Driver and catalog icon of the provider running the subagent. */
+  readonly provider: { readonly driver: string; readonly iconUrl?: string | undefined } | null;
   readonly modelLabel: string;
+  /** Reasoning effort as the composer names it, when the subagent has one. */
+  readonly effortLabel: string | null;
   /** Null until the subagent's root turn arrives. */
   readonly status: ProviderSubagentStatus | null;
   readonly onOpenParent: (() => void) | null;
@@ -28,18 +33,37 @@ export function ProviderSubagentBar(props: {
     return () => clearInterval(id);
   }, [live]);
   const statusLabel = formatProviderSubagentStatus(props.status, nowMs);
+  const modelDescription =
+    props.effortLabel === null ? props.modelLabel : `${props.modelLabel}, ${props.effortLabel}`;
 
   return (
     <View className="flex-row items-center gap-3 rounded-[20px] border border-border-subtle bg-card-alt py-2 pe-2 ps-4">
       {/* Only the text is one element, so "Open parent" stays reachable. */}
       <View
         accessible
-        accessibilityLabel={`${props.modelLabel} subagent, ${statusLabel}. It runs on its own and cannot take messages.`}
+        accessibilityLabel={`${modelDescription} subagent, ${statusLabel}. It runs on its own and cannot take messages.`}
         className="min-w-0 flex-1 gap-0.5"
       >
-        <Text numberOfLines={1} className="font-t3-bold text-sm text-foreground">
-          {props.modelLabel}
-        </Text>
+        <View className="min-w-0 flex-row items-center gap-1.5">
+          {props.provider ? (
+            <ProviderIcon
+              iconUrl={props.provider.iconUrl}
+              provider={props.provider.driver}
+              size={16}
+            />
+          ) : null}
+          <Text numberOfLines={1} className="min-w-0 shrink font-t3-bold text-sm text-foreground">
+            {props.modelLabel}
+          </Text>
+          {props.effortLabel === null ? null : (
+            <Text
+              numberOfLines={1}
+              className="shrink-0 font-sans text-sm text-foreground-secondary"
+            >
+              {props.effortLabel}
+            </Text>
+          )}
+        </View>
         <Text
           numberOfLines={1}
           className="font-sans text-xs text-foreground-secondary"
