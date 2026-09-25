@@ -30,6 +30,19 @@ function assistantTexts(
   );
 }
 
+// Messages in display order, as `role:text`.
+function conversation(projection: OrchestrationV2ThreadProjection): ReadonlyArray<string> {
+  return projection.turnItems
+    .toSorted((left, right) => left.ordinal - right.ordinal)
+    .flatMap((item) =>
+      item.type === "user_message"
+        ? [`user:${item.text.trim()}`]
+        : item.type === "assistant_message"
+          ? [`assistant:${item.text.trim()}`]
+          : [],
+    );
+}
+
 function frameField(frame: unknown, key: string): unknown {
   return typeof frame === "object" && frame !== null ? Reflect.get(frame, key) : undefined;
 }
@@ -139,11 +152,18 @@ export function assertClaudeBackgroundSubagentLifecycleOutput(
   assert.isAbove(agentAStatuses.lastIndexOf("running"), firstCompleted);
   assert.equal(agentAStatuses.at(-1), "completed");
 
-  // One child thread holds both of Agent A's runs, in order.
+  // One child thread holds both of Agent A's runs, in order: each run's
+  // prompt (the launch task, then the SendMessage text) before its reply.
   const agentAChild =
     agentA?.childThreadId == null ? undefined : result.projections.get(agentA.childThreadId);
   assert.isDefined(agentAChild);
   assert.deepEqual(assistantTexts(agentAChild), ["A_FIRST", "A_SECOND"]);
+  assert.deepEqual(conversation(agentAChild), [
+    "user:Reply with exactly: A_FIRST",
+    "assistant:A_FIRST",
+    "user:Reply with exactly: A_SECOND",
+    "assistant:A_SECOND",
+  ]);
 
   // Subagents appear in background_tasks_changed but never on the roster.
   assert.isFalse(

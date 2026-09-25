@@ -2459,6 +2459,9 @@ interface ActiveClaudeSubagent {
   readonly childRootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly turnItemId: OrchestrationV2TurnItem["id"];
   readonly turnItemOrdinal: number;
+  // The tool call that started the current run: the Agent launch, then each
+  // SendMessage that resumes the subagent. A new one means a new prompt.
+  readonly runToolUseId: string | null;
   nextChildItemOrdinal: number;
   progressItemOrdinal: number | null;
   progressStartedAt: DateTime.Utc | null;
@@ -3431,6 +3434,17 @@ export function makeClaudeAdapterV2(
           ) {
             return;
           }
+          // A task_started under a tool call other than the current run's is
+          // a resume: SendMessage re-emits task_started for the same task id
+          // under its own tool_use_id, with the sent message as the prompt.
+          const resumeToolUseId =
+            input.reopen === true &&
+            existingSubagent !== undefined &&
+            input.toolUseId !== undefined &&
+            input.toolUseId !== existingSubagent.runToolUseId &&
+            input.prompt !== undefined
+              ? input.toolUseId
+              : null;
           const lifecycleChanged =
             existingSubagent === undefined ||
             existingSubagent.task.status !== input.status ||
@@ -3533,6 +3547,10 @@ export function makeClaudeAdapterV2(
                 nativeItemId: `${nativeItemId}:subagent`,
               }),
             turnItemOrdinal,
+            runToolUseId:
+              existingSubagent === undefined
+                ? (input.toolUseId ?? null)
+                : (resumeToolUseId ?? existingSubagent.runToolUseId),
             nextChildItemOrdinal: existingSubagent?.nextChildItemOrdinal ?? 100,
             progressItemOrdinal: existingSubagent?.progressItemOrdinal ?? null,
             progressStartedAt: existingSubagent?.progressStartedAt ?? null,
@@ -3654,8 +3672,15 @@ export function makeClaudeAdapterV2(
               },
             });
           }
-          if (existingSubagent === undefined) {
-            const promptNativeItemId = `${nativeItemId}:prompt`;
+          // Each run opens with its own prompt in the child thread: the launch
+          // task, then every message that resumes the subagent.
+          const promptNativeItemId =
+            existingSubagent === undefined
+              ? `${nativeItemId}:prompt`
+              : resumeToolUseId === null
+                ? null
+                : `${nativeItemId}:prompt:${resumeToolUseId}`;
+          if (promptNativeItemId !== null) {
             const promptArtifacts = makeSubagentConversationArtifacts({
               senderThreadId: input.context.input.threadId,
               messageId: idAllocator.derive.messageFromProviderItem({
@@ -3677,7 +3702,7 @@ export function makeClaudeAdapterV2(
               },
               role: "user",
               text: task.prompt,
-              ordinal: 100,
+              ordinal: existingSubagent === undefined ? 100 : ++subagent.nextChildItemOrdinal,
               now,
             });
             yield* emitProviderEvent({
