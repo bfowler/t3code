@@ -188,6 +188,7 @@ import {
 import { useComposerPathSearch } from "../../lib/composerPathSearchState";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
+  composerModelPickerCanStayOpen,
   getRestingComposerImagePreviewCounts,
   resolveRestingComposerControlsLayout,
   shouldAnimateComposerRestingTransition,
@@ -5065,7 +5066,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerControlsVisibleInStrip =
     composerControlsCollapsed && restingControlsHost !== null && restingControlsVisible;
   const composerControlsHidden = composerControlsCollapsed && !restingControlsVisible;
-  if (composerControlsHidden && isComposerModelPickerOpen) {
+  if (
+    isComposerModelPickerOpen &&
+    !composerModelPickerCanStayOpen({
+      controlsHidden: composerControlsHidden,
+      threadSettingsHidden: hideThreadSettings,
+    })
+  ) {
     setIsComposerModelPickerOpen(false);
   }
   useLayoutEffect(() => {

@@ -400,7 +400,11 @@ import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { MessagesTimeline, type MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
-import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
+import {
+  overlayComposerIsResting,
+  resolveComposerTimelineInset,
+  resolveScrollToEndClearance,
+} from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -1866,6 +1870,8 @@ export default function ChatView(props: ChatViewProps) {
   const [composerTimelineInset, setComposerTimelineInset] = useState(0);
   const composerTimelineInsetRef = useRef(0);
   const composerRestingRef = useRef(false);
+  // False while a status bar stands in for the composer (a native subagent).
+  const composerMountedRef = useRef(true);
   const [scrollToEndClearance, setScrollToEndClearance] = useState(0);
   const isAtEndRef = useRef(true);
   const isTimelineAtLogicalEnd = useCallback(
@@ -4037,6 +4043,7 @@ export default function ChatView(props: ChatViewProps) {
   const showProviderSubagentBar = isProviderSubagent;
   const providerSubagentNeedsResponse =
     isProviderSubagent && (pendingApprovals.length > 0 || pendingUserInputs.length > 0);
+  const composerMounted = !showProviderSubagentBar || providerSubagentNeedsResponse;
   const mountComposerContextStrip = shouldShowComposerContextStrip({
     isDraftHeroState,
     persistInActiveThreads: settings.persistComposerContextStrip,
@@ -6417,13 +6424,17 @@ export default function ChatView(props: ChatViewProps) {
     (height: number) => {
       const nextHeight = Math.ceil(height);
       if (nextHeight <= 0) return;
+      const isResting = overlayComposerIsResting({
+        composerMounted: composerMountedRef.current,
+        composerReportedResting: composerRestingRef.current,
+      });
       const modelStrip = composerOverlayElement?.querySelector<HTMLElement>(
         '[data-composer-model-strip="true"]',
       );
       // The model-only strip disappears on expansion; counting it again would
       // add 32px of timeline padding as soon as the empty composer collapses.
       const restingOnlyHeight =
-        modelStrip && composerRestingRef.current
+        modelStrip && isResting
           ? Math.max(
               0,
               modelStrip.offsetHeight + Number.parseFloat(getComputedStyle(modelStrip).marginTop),
@@ -6432,7 +6443,7 @@ export default function ChatView(props: ChatViewProps) {
       const nextInset = resolveComposerTimelineInset({
         currentInset: composerTimelineInsetRef.current,
         overlayHeight: nextHeight,
-        isResting: composerRestingRef.current,
+        isResting,
         restingOnlyHeight,
       });
       if (composerTimelineInsetRef.current !== nextInset) {
@@ -6496,6 +6507,15 @@ export default function ChatView(props: ChatViewProps) {
       resizeObserver.disconnect();
     };
   }, [composerOverlayElement, publishComposerOverlayHeight, showScrollToBottom]);
+  // Swapping the composer for the status bar (or back) changes what the
+  // overlay holds, so rebuild the reservation from the new content.
+  useLayoutEffect(() => {
+    if (composerMountedRef.current === composerMounted) return;
+    composerMountedRef.current = composerMounted;
+    if (!composerOverlayElement) return;
+    composerTimelineInsetRef.current = 0;
+    publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
+  }, [composerMounted, composerOverlayElement, publishComposerOverlayHeight]);
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(activeThreadRef);
   const activeThreadReferenceCopyTarget = useMemo(
     () =>
@@ -10645,7 +10665,7 @@ export default function ChatView(props: ChatViewProps) {
                               }
                             />
                           ) : null}
-                          {showProviderSubagentBar && !providerSubagentNeedsResponse ? null : (
+                          {!composerMounted ? null : (
                             <ChatComposer
                               hideThreadSettings={isProviderSubagent}
                               multipleModelSelections={multipleModelSelections}
