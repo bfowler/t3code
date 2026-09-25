@@ -27,6 +27,10 @@ import {
   normalizeAcpRegistryLiveConfiguration,
   normalizeAcpRegistryWebUrl,
 } from "../../provider/acp/AcpRegistryProbe.ts";
+import {
+  acpRegistryHasNativePermissionModes,
+  acpRegistryPermissionMode,
+} from "../../provider/acp/AcpRegistryPermissionModes.ts";
 import { AcpRegistryCatalog } from "../../provider/acp/AcpRegistrySupport.ts";
 import { AcpRegistryRuntimeCoordinator } from "../../provider/acp/AcpRegistryRuntimeCoordinator.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
@@ -34,6 +38,7 @@ import { makeAcpNativeLoggerFactory } from "../../provider/acp/AcpNativeLogging.
 import { ProviderEventLoggers } from "../../provider/Layers/ProviderEventLoggers.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { IdAllocatorV2 } from "../IdAllocator.ts";
+import type { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import { MISTRAL_VIBE_RATE_LIMITED, registerMistralVibeAcpExtensions } from "./MistralVibeAcp.ts";
 import {
@@ -139,10 +144,22 @@ function makeAcpRegistryRuntime(options: AcpRegistryAdapterV2Options) {
 
 export function makeAcpRegistryAdapterV2(options: AcpRegistryAdapterV2Options) {
   const runtimeCoordinator = options.runtimeCoordinator;
-  const isDevin = options.settings.agentId === "devin";
+  const agentId = options.settings.agentId;
+  const isDevin = agentId === "devin";
+  // Mapped agents run the thread's runtime mode as their own permission mode
+  // and, without client fs, confine their own execution.
+  const nativePermissionModes = acpRegistryHasNativePermissionModes(agentId);
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
-    capabilities: AcpProviderCapabilitiesV2,
+    capabilities: nativePermissionModes
+      ? { ...AcpProviderCapabilitiesV2, runtimePolicy: { enforcement: "native" } }
+      : AcpProviderCapabilitiesV2,
+    ...(nativePermissionModes
+      ? {
+          sessionModeForPolicy: (policy: ProviderAdapterV2RuntimePolicy) =>
+            acpRegistryPermissionMode(agentId, policy.runtimeMode),
+        }
+      : {}),
     promptFailure: (cause) => acpRegistryPromptFailure(options.settings.agentId, cause),
     ...(options.settings.agentId === "mistral-vibe"
       ? { registerExtensions: registerMistralVibeAcpExtensions }

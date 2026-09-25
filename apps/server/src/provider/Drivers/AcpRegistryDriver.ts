@@ -61,6 +61,10 @@ import { AcpRegistryCatalog, type AcpRegistryInspection } from "../acp/AcpRegist
 import { AcpRegistryRuntimeCoordinator } from "../acp/AcpRegistryRuntimeCoordinator.ts";
 import * as AcpRegistryAuth from "../acp/AcpRegistryAuth.ts";
 import * as AcpRegistryAuthenticationState from "../acp/AcpRegistryAuthenticationState.ts";
+import {
+  acpRegistryHasNativePermissionModes,
+  acpRegistryIsModeOptionDescriptor,
+} from "../acp/AcpRegistryPermissionModes.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
@@ -95,15 +99,22 @@ function modelsFromDiscovery(
   discovery:
     | Pick<AcpRegistryLiveConfiguration, "models" | "currentModelId" | "configOptions">
     | undefined,
-  customModels: ReadonlyArray<string>,
+  settings: Pick<AcpRegistrySettings, "agentId" | "customModels">,
 ): ReadonlyArray<ServerProviderModel> {
   const discovered = discovery?.models ?? [];
   // Discovered session config options and modes ride on every model so the
-  // composer's generic option controls can drive them per thread.
+  // composer's generic option controls can drive them per thread. Agents whose
+  // permission mode follows the thread's runtime mode get no mode picker, so
+  // the composer cannot contradict the policy.
+  const optionDescriptors = (discovery?.configOptions ?? []).filter(
+    (descriptor) =>
+      !acpRegistryHasNativePermissionModes(settings.agentId) ||
+      !acpRegistryIsModeOptionDescriptor(descriptor),
+  );
   const capabilities =
-    discovery === undefined || discovery.configOptions.length === 0
+    optionDescriptors.length === 0
       ? EMPTY_CAPABILITIES
-      : createModelCapabilities({ optionDescriptors: discovery.configOptions });
+      : createModelCapabilities({ optionDescriptors });
   const builtInModels: ReadonlyArray<ServerProviderModel> =
     discovered.length === 0
       ? [
@@ -122,7 +133,7 @@ function modelsFromDiscovery(
           ...(model.id === discovery?.currentModelId ? { isDefault: true } : {}),
           capabilities,
         }));
-  return providerModelsFromSettings(builtInModels, customModels, capabilities);
+  return providerModelsFromSettings(builtInModels, settings.customModels, capabilities);
 }
 
 export function acpRegistrySnapshotReadiness(
@@ -226,7 +237,7 @@ function baseSnapshot(
           : input.settings.agentId.length > 0),
     },
     ...(input.message ? { message: input.message } : {}),
-    models: modelsFromDiscovery(input.probe?.probe, input.settings.customModels),
+    models: modelsFromDiscovery(input.probe?.probe, input.settings),
     ...(input.probe === undefined
       ? {}
       : {
@@ -256,13 +267,13 @@ export function applyAcpRegistryAvailableCommands(
 export function applyAcpRegistryLiveConfiguration(
   provider: ServerProvider,
   configuration: AcpRegistryLiveConfiguration,
-  customModels: ReadonlyArray<string>,
+  settings: Pick<AcpRegistrySettings, "agentId" | "customModels">,
 ): ServerProvider {
   const { message: _staleProbeMessage, ...snapshot } = provider;
   return {
     ...snapshot,
     status: provider.enabled ? "ready" : provider.status,
-    models: modelsFromDiscovery(configuration, customModels),
+    models: modelsFromDiscovery(configuration, settings),
   };
 }
 
@@ -549,7 +560,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
                       applyAcpRegistryLiveConfiguration(
                         withCommands,
                         liveConfiguration,
-                        effectiveConfig.customModels,
+                        effectiveConfig,
                       ),
                   });
                   return applyAcpRegistryUrlAuthAction(withConfiguration, authAction);
@@ -674,11 +685,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
                 getSnapshot.pipe(
                   Effect.flatMap((current) =>
                     publishSnapshot(
-                      applyAcpRegistryLiveConfiguration(
-                        current,
-                        configuration,
-                        effectiveConfig.customModels,
-                      ),
+                      applyAcpRegistryLiveConfiguration(current, configuration, effectiveConfig),
                     ),
                   ),
                 ),

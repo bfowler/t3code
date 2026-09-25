@@ -22,6 +22,11 @@ import type {
 import { makeAcpRegistryCatalog } from "../../provider/acp/AcpRegistrySupport.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import { layer as idAllocatorLayer, IdAllocatorV2 } from "../IdAllocator.ts";
+import {
+  decodeAcpReplayTranscript,
+  makeAcpReplayCompletenessAssertion,
+  makeAcpReplayRuntime,
+} from "./AcpAdapterV2.testkit.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import { BUILT_IN_PROVIDER_ADAPTER_DRIVER_KINDS_V2 } from "../builtInProviderAdapterDrivers.ts";
 import {
@@ -123,6 +128,224 @@ describe("AcpRegistryAdapterV2", () => {
       customModels: [],
     });
   });
+
+  it.effect("switches mapped agents to their own permission mode for the runtime mode", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const idAllocator = yield* IdAllocatorV2;
+      const path = yield* Path.Path;
+      const serverConfig = yield* ServerConfig;
+      const scriptPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
+      );
+      // Scripted ACP v1 agents: one advertises a `mode` config option (codex-acp,
+      // claude-acp, qwen-code, mistral-vibe), one only `modes` (gemini-cli, goose).
+      const initialize = [
+        {
+          type: "expect_outbound",
+          frame: { kind: "request", method: "initialize", params: "<any>" },
+        },
+        {
+          type: "emit_inbound",
+          frame: {
+            kind: "response",
+            method: "initialize",
+            result: {
+              protocolVersion: 1,
+              agentCapabilities: { loadSession: false },
+              authMethods: [{ id: "test", name: "Test" }],
+            },
+          },
+        },
+        {
+          type: "expect_outbound",
+          frame: { kind: "request", method: "session/new", params: "<any>" },
+        },
+      ] as const;
+      const codexModeOption = (currentValue: string) => ({
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue,
+        options: ["read-only", "workspace-write", "agent", "agent-full-access"].map((value) => ({
+          value,
+          name: value,
+        })),
+      });
+      const openWith = Effect.fn("openWith")(function* (input: {
+        readonly agentId: string;
+        readonly runtimeMode: "approval-required" | "full-access";
+        readonly entries: ReadonlyArray<unknown>;
+      }) {
+        const replayDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: `t3-acp-registry-mode-${input.agentId}-`,
+        });
+        const statusPath = path.join(replayDir, "status.json");
+        const transcript = yield* decodeAcpReplayTranscript(
+          {
+            provider: ACP_REGISTRY_PROVIDER,
+            protocol: "acp.ndjson-jsonrpc",
+            version: "1",
+            scenario: `native-mode-${input.agentId}`,
+            entries: [...initialize, ...input.entries] as never,
+          },
+          ACP_REGISTRY_PROVIDER,
+        );
+        const instanceId = ProviderInstanceId.make(`acp-registry-mode-${input.agentId}`);
+        const adapter = makeAcpRegistryAdapterV2({
+          crypto: yield* Crypto.Crypto,
+          selfInvocation: yield* resolveSelfInvocation(),
+          instanceId,
+          settings: yield* decodeAcpRegistryAdapterSettings({
+            agentId: input.agentId,
+            authMethodId: "test",
+          }),
+          environment: {},
+          childProcessSpawner,
+          fileSystem,
+          idAllocator,
+          resolver: { resolve: () => Effect.die("the runtime is injected") },
+          serverConfig,
+          makeRuntime: makeAcpReplayRuntime({
+            transcript,
+            statusPath,
+            scriptPath,
+            childProcessSpawner,
+            fileSystem,
+          }),
+        });
+        const runtime = yield* adapter.openSession({
+          threadId: ThreadId.make(`thread-acp-registry-mode-${input.agentId}`),
+          providerSessionId: ProviderSessionId.make(`provider-session-mode-${input.agentId}`),
+          modelSelection: {
+            instanceId,
+            model: "default",
+            // A stored pick from the composer must not override the policy.
+            options: [{ id: "mode", value: "agent-full-access" }],
+          },
+          runtimePolicy: ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: input.runtimeMode,
+            interactionMode: "default",
+            cwd: replayDir,
+          }),
+        });
+        yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
+        return runtime.providerSession.capabilities.runtimePolicy.enforcement;
+      });
+
+      assert.equal(
+        yield* openWith({
+          agentId: "codex-acp",
+          runtimeMode: "approval-required",
+          entries: [
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "session/new",
+                result: { sessionId: "codex-session", configOptions: [codexModeOption("agent")] },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                kind: "request",
+                method: "session/set_config_option",
+                params: { sessionId: "codex-session", configId: "mode", value: "read-only" },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "session/set_config_option",
+                result: { configOptions: [codexModeOption("read-only")] },
+              },
+            },
+          ],
+        }),
+        "native",
+      );
+      assert.equal(
+        yield* openWith({
+          agentId: "gemini",
+          runtimeMode: "full-access",
+          entries: [
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "session/new",
+                result: {
+                  sessionId: "gemini-session",
+                  modes: {
+                    currentModeId: "default",
+                    availableModes: ["default", "autoEdit", "yolo"].map((id) => ({
+                      id,
+                      name: id,
+                    })),
+                  },
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                kind: "request",
+                method: "session/set_mode",
+                params: { sessionId: "gemini-session", modeId: "yolo" },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: { kind: "response", method: "session/set_mode", result: {} },
+            },
+          ],
+        }),
+        "native",
+      );
+      // Unmapped agents keep their own mode and T3's client-boundary label.
+      assert.equal(
+        yield* openWith({
+          agentId: "fixture-agent",
+          runtimeMode: "approval-required",
+          entries: [
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "session/new",
+                result: { sessionId: "fixture-session", configOptions: [codexModeOption("agent")] },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                kind: "request",
+                method: "session/set_config_option",
+                params: {
+                  sessionId: "fixture-session",
+                  configId: "mode",
+                  value: "agent-full-access",
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                kind: "response",
+                method: "session/set_config_option",
+                result: { configOptions: [codexModeOption("agent-full-access")] },
+              },
+            },
+          ],
+        }),
+        "client-boundary",
+      );
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
 
   it.effect("offers client terminals to Devin only and client fs to no registry agent", () =>
     Effect.gen(function* () {

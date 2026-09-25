@@ -6000,8 +6000,19 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               };
             });
           }
-          const optionSelections = modelSelection.options ?? [];
           const configOptions = yield* runtime.getConfigOptions;
+          // A native mode for the runtime policy wins over a stored mode pick,
+          // so an older thread's selection cannot loosen the policy.
+          const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
+          const policyModeConfigIds = new Set(
+            configOptions.flatMap((option) => (option.category === "mode" ? [option.id] : [])),
+          );
+          const optionSelections = (modelSelection.options ?? []).filter(
+            (selection) =>
+              policyMode === undefined ||
+              (selection.id !== ACP_SESSION_MODE_OPTION_ID &&
+                !policyModeConfigIds.has(selection.id)),
+          );
           const availableConfigIds = new Set(configOptions.map((option) => option.id));
           const hasNativeConfigWithSyntheticModeId = availableConfigIds.has(
             ACP_SESSION_MODE_OPTION_ID,
@@ -6062,9 +6073,30 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               }),
             );
           }
-          const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
+          // The agent enforces the runtime mode itself in its own permission
+          // mode. Skip a mode the session does not advertise (agent versions
+          // rename modes) and warn when the agent did not switch.
           if (policyMode !== undefined) {
-            yield* runtime.setMode(policyMode);
+            const advertisedModes = (yield* runtime.getModeState)?.availableModes;
+            if (
+              advertisedModes === undefined ||
+              advertisedModes.some((mode) => mode.id === policyMode)
+            ) {
+              yield* runtime.setMode(policyMode);
+            }
+            const appliedModeId = (yield* runtime.getModeState)?.currentModeId;
+            if (appliedModeId !== policyMode) {
+              yield* Effect.logWarning(
+                "ACP agent did not switch to the runtime mode's native mode",
+                {
+                  driver,
+                  sessionId: startResult.sessionId,
+                  runtimeMode: runtimePolicy.runtimeMode,
+                  expectedModeId: policyMode,
+                  appliedModeId,
+                },
+              );
+            }
           }
           const modeState = yield* runtime.getModeState;
           // The synthetic mode selection is skipped rather than failed when the

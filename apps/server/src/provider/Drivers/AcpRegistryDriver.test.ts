@@ -123,9 +123,44 @@ describe("acpRegistrySnapshotReadiness", () => {
       applyAcpRegistryLiveConfiguration(
         snapshot,
         { models: [], currentModelId: null, configOptions: [] },
-        [],
+        { agentId: "test-agent", customModels: [] },
       ).auth.status,
     ).toBe("unknown");
+  });
+
+  it("hides the mode picker only for agents whose mode follows the runtime mode", () => {
+    const provider = buildCheckedAcpRegistrySnapshot({
+      ...identity,
+      settings: decodeSettings({ agentId: "codex-acp" }),
+      checkedAt: "2026-08-13T10:00:00.000Z",
+      inspection: { status: "ready", agentId: "codex-acp", version: "1.0.0", distribution: "npx" },
+    });
+    const configuration = {
+      models: [{ id: "gpt", name: "GPT", description: null }],
+      currentModelId: "gpt",
+      configOptions: [
+        {
+          id: "mode",
+          label: "Mode",
+          type: "select" as const,
+          options: [{ id: "read-only", label: "Read-only" }],
+        },
+        {
+          id: "reasoning_effort",
+          label: "Reasoning",
+          type: "select" as const,
+          options: [{ id: "high", label: "High" }],
+        },
+      ],
+    };
+    const optionIds = (agentId: string) =>
+      applyAcpRegistryLiveConfiguration(provider, configuration, {
+        agentId,
+        customModels: [],
+      }).models[0]?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id);
+
+    expect(optionIds("codex-acp")).toEqual(["reasoning_effort"]);
+    expect(optionIds("fixture-agent")).toEqual(["mode", "reasoning_effort"]);
   });
 
   it("overlays live configuration without dropping probe-owned session capabilities", () => {
@@ -170,7 +205,7 @@ describe("acpRegistrySnapshotReadiness", () => {
           currentModelId: "live-model",
           configOptions: [],
         },
-        [],
+        { agentId: "test-agent", customModels: [] },
       ),
     ).toMatchObject({
       auth: { status: "unknown", canLogout: true },

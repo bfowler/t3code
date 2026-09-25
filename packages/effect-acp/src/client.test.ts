@@ -924,6 +924,31 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
         }),
       );
       yield* Fiber.join(selectModel);
+      const selectMode = yield* acp.agent
+        .setSessionMode({ sessionId: session.sessionId, modeId: "yolo" })
+        .pipe(Effect.forkScoped);
+      const modeSelection = yield* Queue.take(output).pipe(
+        Effect.flatMap(
+          Schema.decodeEffect(
+            Schema.fromJsonString(
+              jsonRpcRequest(
+                "session/set_mode",
+                Schema.Struct({ sessionId: Schema.String, modeId: Schema.String }),
+              ),
+            ),
+          ),
+        ),
+      );
+      assert.equal(modeSelection.params.modeId, "yolo");
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(jsonRpcResponse(Schema.Unknown), {
+          jsonrpc: "2.0",
+          id: modeSelection.id,
+          result: {},
+        }),
+      );
+      yield* Fiber.join(selectMode);
 
       yield* acp.handleElicitation(() =>
         Effect.succeed({ action: "accept", content: { branch: "main" } }),
