@@ -2903,6 +2903,34 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
             payload: node({ id: childRootId, threadId: childId, runId: null, kind: "root_turn" }),
           },
           {
+            // Claude's live "Subagent progress" item in the child, as the
+            // adapter writes it while task_progress frames arrive.
+            id: EventId.make("event:foundation-native-subagent:child-progress"),
+            type: "turn-item.updated",
+            threadId: childId,
+            nodeId: childRootId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("item:foundation-native-subagent:progress"),
+              threadId: childId,
+              runId: null,
+              nodeId: childRootId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 101,
+              type: "reasoning",
+              status: "running",
+              title: "Subagent progress",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+              text: "Running git diff --stat",
+              streaming: true,
+            },
+          },
+          {
             id: EventId.make("event:foundation-native-subagent:subagent"),
             type: "subagent.updated",
             threadId: parentId,
@@ -2991,6 +3019,11 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       const childRoot = childProjection.nodes.find((candidate) => candidate.id === childRootId);
       assert.equal(childRoot?.status, "cancelled");
       assert.isNotNull(childRoot?.completedAt ?? null);
+      // Nothing inside the child keeps reading as live work either.
+      const progress = childProjection.turnItems.find((item) => item.type === "reasoning");
+      assert.equal(progress?.status, "cancelled");
+      assert.isFalse(progress?.type === "reasoning" && progress.streaming);
+      assert.isNotNull(progress?.completedAt ?? null);
       assert.notInclude(yield* projectionStore.getRecoveryThreadIds("runtime"), childId);
     }),
   );

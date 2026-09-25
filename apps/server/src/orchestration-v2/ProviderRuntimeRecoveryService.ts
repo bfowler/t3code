@@ -440,8 +440,12 @@ export const make = Effect.gen(function* () {
         }
       }
       // A provider-native subagent thread has no runs: its work is a runless
-      // root turn that only the dead provider process could settle. Left
-      // running, the child would show as working forever.
+      // root turn, plus items under it (Claude's live progress item), that
+      // only the dead provider process could settle. Left running, the child
+      // would show as working forever.
+      const cancelledStaleItemIds = new Set(
+        events.flatMap((event) => (event.type === "turn-item.updated" ? [event.payload.id] : [])),
+      );
       for (const node of projection.nodes) {
         if (
           node.kind !== "root_turn" ||
@@ -461,6 +465,34 @@ export const make = Effect.gen(function* () {
           occurredAt: now,
           payload: { ...node, status: "cancelled", completedAt: now },
         });
+        for (const item of projection.turnItems) {
+          if (
+            item.nodeId !== node.id ||
+            item.runId !== null ||
+            !isNonterminalTurnItemStatus(item.status) ||
+            cancelledStaleItemIds.has(item.id)
+          ) {
+            continue;
+          }
+          cancelledStaleItemIds.add(item.id);
+          events.push({
+            id: yield* allocateEventId(),
+            type: "turn-item.updated",
+            threadId: projection.thread.id,
+            nodeId: node.id,
+            providerInstanceId: projection.thread.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              ...item,
+              status: "cancelled",
+              completedAt: now,
+              updatedAt: now,
+              ...(item.type === "reasoning" || item.type === "assistant_message"
+                ? { streaming: false }
+                : {}),
+            },
+          });
+        }
       }
       // All provider processes are gone on startup/shutdown: clear any
       // persisted Waiting roster (including idle threads from settled roots)

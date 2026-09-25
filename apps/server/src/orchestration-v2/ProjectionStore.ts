@@ -3878,6 +3878,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
                   )
                   OR item.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                  OR (
+                    item.run_id IS NULL
+                    AND item.node_id IN (
+                      SELECT node_id FROM orchestration_v2_projection_nodes
+                      WHERE thread_id = ${threadId}
+                        AND run_id IS NULL
+                        AND kind = 'root_turn'
+                        AND status IN ('pending', 'running', 'waiting')
+                    )
+                  )
                 )
               ORDER BY item.ordinal ASC, item.turn_item_id ASC
             `,
