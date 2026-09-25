@@ -80,9 +80,10 @@ export interface TranscriptParseResult {
 
 /** 64 bytes of JSONL tail is ample to distinguish a replaced file. */
 export const GUARD_LENGTH = 64;
-// Keep native JSON.parse for ordinary records; project large records before
-// decoding their usage. This is a switch in readers, never a record-size limit.
-const STREAMING_THRESHOLD_BYTES = 1024 * 1024;
+// Native parsing is faster for common 1–4 MiB context/tool records. Above
+// 8 MiB, project usage without allocating the whole record. This switches
+// readers; it never discards a record because of its size.
+const STREAMING_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const NEWLINE = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
 
@@ -252,7 +253,9 @@ export async function readTranscriptRecords(
   filePath: string,
   provider: UsageProviderKind,
   resumeFrom?: TranscriptParsePosition,
+  options?: { readonly streamingThresholdBytes?: number },
 ): Promise<TranscriptParseResult | null> {
+  const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
   let handle: NodeFSP.FileHandle;
   try {
     handle = await NodeFSP.open(filePath, "r");
@@ -317,7 +320,7 @@ export async function readTranscriptRecords(
     const selectPath = selectUsageFields(provider);
 
     const append = (segment: Buffer) => {
-      if (!streaming && pendingBytes + segment.length <= STREAMING_THRESHOLD_BYTES) {
+      if (!streaming && pendingBytes + segment.length <= streamingThresholdBytes) {
         if (segment.length > 0) pendingChunks.push(segment);
         pendingBytes += segment.length;
         return;
@@ -361,6 +364,7 @@ export async function readTranscriptRecords(
     const stream = handle.createReadStream({
       start,
       autoClose: false,
+      highWaterMark: 256 * 1024,
     }) as AsyncIterable<Buffer>;
     for await (const chunk of stream) {
       let lineStart = 0;

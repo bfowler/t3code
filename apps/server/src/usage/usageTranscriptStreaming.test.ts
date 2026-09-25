@@ -5,7 +5,18 @@ import * as NodePath from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
-import { readTranscriptRecords } from "./usageTranscriptReader.ts";
+import {
+  readTranscriptRecords as readWithDefaultThreshold,
+  type TranscriptParsePosition,
+} from "./usageTranscriptReader.ts";
+
+// Exercise the same transition with compact fixtures. UsageService tests and
+// external 65/517 MiB fixtures also exercise the production threshold.
+const readTranscriptRecords = (
+  path: string,
+  provider: "claude" | "codex" | "grok",
+  position?: TranscriptParsePosition,
+) => readWithDefaultThreshold(path, provider, position, { streamingThresholdBytes: 256 * 1024 });
 
 let dir: string;
 beforeEach(async () => {

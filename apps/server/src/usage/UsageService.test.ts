@@ -619,7 +619,7 @@ describe("UsageService", () => {
         const { transcript, settings, home } = yield* setup;
         const large = claudeLine(1, 9900).replace(
           '"message":',
-          '"padding":' + encodeUnknownJsonString("x".repeat(1024 * 1024)) + ',"message":',
+          '"padding":' + encodeUnknownJsonString("x".repeat(9 * 1024 * 1024)) + ',"message":',
         );
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, large));
         yield* Effect.gen(function* () {
