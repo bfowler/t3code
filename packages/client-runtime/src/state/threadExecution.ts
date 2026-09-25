@@ -11,7 +11,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 
@@ -119,26 +119,24 @@ export function deriveProviderSubagentStatus(
 const REASONING_EFFORT_OPTION_IDS = ["reasoningEffort", "effort", "reasoning", "variant"] as const;
 
 /**
- * The reasoning effort a thread's model runs at, as the composer names it:
- * the provider's option label when its catalog describes the option, else
- * the raw value capitalized. Null when the selection carries no effort (a
- * subagent on a different model than its parent reports none).
+ * The reasoning effort a thread's model runs at, resolved and named the way
+ * the composer's effort picker does: the stored choice when valid, else the
+ * descriptor's current value, else the model's default. Null when the
+ * provider catalog has no effort option for this model (a subagent on a
+ * model the catalog does not describe), rather than guessing.
  */
 export function formatModelSelectionEffort(
   selection: ModelSelection,
   models: ReadonlyArray<ServerProviderModel> = [],
 ): string | null {
+  const caps = models.find((model) => model.slug === selection.model)?.capabilities;
+  if (!caps) return null;
+  const descriptors = getProviderOptionDescriptors({ caps, selections: selection.options });
   for (const id of REASONING_EFFORT_OPTION_IDS) {
-    const value = getModelSelectionStringOptionValue(selection, id)?.trim();
-    if (!value) continue;
-    const descriptor = models
-      .find((model) => model.slug === selection.model)
-      ?.capabilities?.optionDescriptors?.find((candidate) => candidate.id === id);
-    const label =
-      descriptor?.type === "select"
-        ? descriptor.options.find((option) => option.id === value)?.label
-        : undefined;
-    return label ?? `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+    const descriptor = descriptors.find((candidate) => candidate.id === id);
+    if (descriptor?.type !== "select") continue;
+    const label = getProviderOptionCurrentLabel(descriptor);
+    if (label) return label;
   }
   return null;
 }

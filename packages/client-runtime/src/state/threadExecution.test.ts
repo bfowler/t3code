@@ -310,7 +310,7 @@ describe("formatModelSelectionEffort", () => {
     model: "claude-sonnet-5",
     ...(options === undefined ? {} : { options }),
   });
-  const models = [
+  const catalog = (descriptor: { currentValue?: string }) => [
     {
       slug: "claude-sonnet-5",
       name: "Claude Sonnet 5",
@@ -322,31 +322,40 @@ describe("formatModelSelectionEffort", () => {
             label: "Reasoning",
             type: "select" as const,
             options: [
-              { id: "high", label: "High" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
               { id: "xhigh", label: "Extra High" },
             ],
+            ...descriptor,
           },
         ],
       },
     },
   ];
 
-  it("names the effort the way the provider's catalog does", () => {
-    expect(formatModelSelectionEffort(selection([{ id: "effort", value: "xhigh" }]), models)).toBe(
-      "Extra High",
+  it("shows the model's default effort when the user never picked one", () => {
+    expect(formatModelSelectionEffort(selection(), catalog({}))).toBe("High");
+  });
+
+  it("names a stored effort the way the catalog does", () => {
+    expect(
+      formatModelSelectionEffort(selection([{ id: "effort", value: "xhigh" }]), catalog({})),
+    ).toBe("Extra High");
+  });
+
+  it("uses the descriptor's current value over the default", () => {
+    expect(formatModelSelectionEffort(selection(), catalog({ currentValue: "medium" }))).toBe(
+      "Medium",
     );
   });
 
-  it("capitalizes an effort the catalog does not describe", () => {
+  it("shows nothing for a model the catalog does not describe", () => {
+    expect(formatModelSelectionEffort(selection([{ id: "effort", value: "high" }]))).toBeNull();
     expect(
-      formatModelSelectionEffort(selection([{ id: "reasoningEffort", value: "medium" }])),
-    ).toBe("Medium");
-  });
-
-  it("shows nothing when the selection carries no effort", () => {
-    expect(formatModelSelectionEffort(selection())).toBeNull();
-    expect(
-      formatModelSelectionEffort(selection([{ id: "contextWindow", value: "1m" }])),
+      formatModelSelectionEffort(
+        { ...selection(), model: "claude-haiku-4-5" },
+        catalog({ currentValue: "medium" }),
+      ),
     ).toBeNull();
   });
 });
