@@ -381,6 +381,11 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
           mcpServers: [],
         });
         assert.equal(session.sessionId, "mock-session-1");
+        // ACP v2 removed session/set_mode; modes are config options there.
+        const setMode = yield* acp.agent
+          .setSessionMode({ sessionId: session.sessionId, modeId: "code" })
+          .pipe(Effect.flip);
+        assert.equal(setMode._tag === "AcpRequestError" ? setMode.code : undefined, -32601);
 
         const prompt = yield* acp.agent.prompt({
           sessionId: session.sessionId,

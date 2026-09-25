@@ -27,10 +27,7 @@ import {
   normalizeAcpRegistryLiveConfiguration,
   normalizeAcpRegistryWebUrl,
 } from "../../provider/acp/AcpRegistryProbe.ts";
-import {
-  acpRegistryHasNativePermissionModes,
-  acpRegistryPermissionMode,
-} from "../../provider/acp/AcpRegistryPermissionModes.ts";
+import { acpRegistryPermissionMode } from "../../provider/acp/AcpRegistryPermissionModes.ts";
 import { AcpRegistryCatalog } from "../../provider/acp/AcpRegistrySupport.ts";
 import { AcpRegistryRuntimeCoordinator } from "../../provider/acp/AcpRegistryRuntimeCoordinator.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
@@ -147,19 +144,22 @@ export function makeAcpRegistryAdapterV2(options: AcpRegistryAdapterV2Options) {
   const agentId = options.settings.agentId;
   const isDevin = agentId === "devin";
   // Mapped agents run the thread's runtime mode as their own permission mode
-  // and, without client fs, confine their own execution.
-  const nativePermissionModes = acpRegistryHasNativePermissionModes(agentId);
+  // and, without client fs, confine their own execution. A session only opens
+  // once a mode stricter than full access applied, so "native" holds for it.
+  const nativePermissionModes = acpRegistryPermissionMode(agentId, "approval-required");
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
-    capabilities: nativePermissionModes
-      ? { ...AcpProviderCapabilitiesV2, runtimePolicy: { enforcement: "native" } }
-      : AcpProviderCapabilitiesV2,
-    ...(nativePermissionModes
-      ? {
+    capabilities:
+      nativePermissionModes === undefined
+        ? AcpProviderCapabilitiesV2
+        : { ...AcpProviderCapabilitiesV2, runtimePolicy: { enforcement: "native" } },
+    ...(nativePermissionModes === undefined
+      ? {}
+      : {
           sessionModeForPolicy: (policy: ProviderAdapterV2RuntimePolicy) =>
-            acpRegistryPermissionMode(agentId, policy.runtimeMode),
-        }
-      : {}),
+            acpRegistryPermissionMode(agentId, policy.runtimeMode)?.modeId,
+          sessionModeEnforcesPolicy: { agentName: nativePermissionModes.agentName },
+        }),
     promptFailure: (cause) => acpRegistryPromptFailure(options.settings.agentId, cause),
     ...(options.settings.agentId === "mistral-vibe"
       ? { registerExtensions: registerMistralVibeAcpExtensions }

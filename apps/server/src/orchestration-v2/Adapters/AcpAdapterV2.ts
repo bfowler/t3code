@@ -248,6 +248,13 @@ export interface AcpAdapterV2Flavor {
   /** Native session mode to select for a runtime policy (e.g. Antigravity `yolo`). */
   readonly sessionModeForPolicy?: (policy: ProviderAdapterV2RuntimePolicy) => string | undefined;
   /**
+   * Set with `sessionModeForPolicy` when the agent's mode is what enforces the
+   * runtime policy. A session whose policy is stricter than full access then
+   * fails to open, naming this agent, when the agent does not advertise,
+   * accept, or report the mode; full access only warns.
+   */
+  readonly sessionModeEnforcesPolicy?: { readonly agentName: string };
+  /**
    * Opts the session into the ACP client `fs` capability. Agents read and write
    * files themselves under their own permission model unless a flavor sets
    * this. Requests pass the runtime policy guard, then these handlers, which
@@ -6074,18 +6081,35 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             );
           }
           // The agent enforces the runtime mode itself in its own permission
-          // mode. Skip a mode the session does not advertise (agent versions
-          // rename modes) and warn when the agent did not switch.
+          // mode. Agent versions rename and refuse modes, so a mode that is
+          // not advertised, is rejected, or does not stick fails the session
+          // when the agent enforces a stricter policy than full access (it
+          // would otherwise run unconfined without asking) and only warns
+          // otherwise.
           if (policyMode !== undefined) {
             const advertisedModes = (yield* runtime.getModeState)?.availableModes;
-            if (
+            const advertised =
               advertisedModes === undefined ||
-              advertisedModes.some((mode) => mode.id === policyMode)
-            ) {
-              yield* runtime.setMode(policyMode);
-            }
+              advertisedModes.some((mode) => mode.id === policyMode);
+            const rejection = advertised
+              ? yield* runtime.setMode(policyMode).pipe(
+                  Effect.as(undefined),
+                  Effect.catchTag("AcpRequestError", (error) => Effect.succeed(error)),
+                )
+              : undefined;
             const appliedModeId = (yield* runtime.getModeState)?.currentModeId;
             if (appliedModeId !== policyMode) {
+              const enforcement = flavor.sessionModeEnforcesPolicy;
+              const reason = !advertised
+                ? "does not offer it"
+                : rejection !== undefined
+                  ? `refused it (${rejection.errorMessage})`
+                  : `stayed in '${appliedModeId ?? "unknown"}'`;
+              if (enforcement !== undefined && runtimePolicy.runtimeMode !== "full-access") {
+                return yield* EffectAcpErrors.AcpRequestError.internalError(
+                  `${enforcement.agentName} could not switch to its '${policyMode}' mode for this thread's permission mode: it ${reason}. Choose another permission mode or update the agent.`,
+                );
+              }
               yield* Effect.logWarning(
                 "ACP agent did not switch to the runtime mode's native mode",
                 {
@@ -6094,6 +6118,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                   runtimeMode: runtimePolicy.runtimeMode,
                   expectedModeId: policyMode,
                   appliedModeId,
+                  reason,
                 },
               );
             }

@@ -1,10 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ProviderSessionId,
+  type RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -129,223 +136,330 @@ describe("AcpRegistryAdapterV2", () => {
     });
   });
 
-  it.effect("switches mapped agents to their own permission mode for the runtime mode", () =>
-    Effect.gen(function* () {
+  describe("native permission modes", () => {
+    type Frame = Record<string, unknown>;
+    const outbound = (method: string, params: unknown = "<any>"): Frame => ({
+      type: "expect_outbound",
+      frame: { kind: "request", method, params },
+    });
+    const answer = (method: string, result: unknown): Frame => ({
+      type: "emit_inbound",
+      frame: { kind: "response", method, result },
+    });
+    const reject = (method: string, code: number, message: string): Frame => ({
+      type: "emit_inbound",
+      frame: { kind: "response", method, error: { code, message } },
+    });
+    const modeOption = (currentValue: string, values: ReadonlyArray<string>) => ({
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      type: "select",
+      currentValue,
+      options: values.map((value) => ({ value, name: value })),
+    });
+    const modes = (currentModeId: string, ids: ReadonlyArray<string>) => ({
+      currentModeId,
+      availableModes: ids.map((id) => ({ id, name: id })),
+    });
+    // A scripted ACP v1 agent: initialize, session/new answered with `setup`,
+    // then the frames T3 must send (and the agent's answers) to switch modes.
+    const agentScript = (setup: unknown, modeFrames: ReadonlyArray<Frame>) => [
+      outbound("initialize"),
+      answer("initialize", {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: false },
+        authMethods: [{ id: "test", name: "Test" }],
+      }),
+      outbound("session/new"),
+      answer("session/new", { sessionId: "agent-session", ...(setup as object) }),
+      ...modeFrames,
+    ];
+    const setConfigMode = (value: string) =>
+      outbound("session/set_config_option", {
+        sessionId: "agent-session",
+        configId: "mode",
+        value,
+      });
+    const setMode = (modeId: string) =>
+      outbound("session/set_mode", { sessionId: "agent-session", modeId });
+
+    const openSession = Effect.fn("openSession")(function* (input: {
+      readonly agentId: string;
+      readonly runtimeMode: RuntimeMode;
+      readonly entries: ReadonlyArray<Frame>;
+      readonly storedModePick?: string;
+    }) {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
-      const idAllocator = yield* IdAllocatorV2;
       const path = yield* Path.Path;
-      const serverConfig = yield* ServerConfig;
-      const scriptPath = yield* path.fromFileUrl(
-        new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
-      );
-      // Scripted ACP v1 agents: one advertises a `mode` config option (codex-acp,
-      // claude-acp, qwen-code, mistral-vibe), one only `modes` (gemini-cli, goose).
-      const initialize = [
-        {
-          type: "expect_outbound",
-          frame: { kind: "request", method: "initialize", params: "<any>" },
-        },
-        {
-          type: "emit_inbound",
-          frame: {
-            kind: "response",
-            method: "initialize",
-            result: {
-              protocolVersion: 1,
-              agentCapabilities: { loadSession: false },
-              authMethods: [{ id: "test", name: "Test" }],
-            },
-          },
-        },
-        {
-          type: "expect_outbound",
-          frame: { kind: "request", method: "session/new", params: "<any>" },
-        },
-      ] as const;
-      const codexModeOption = (currentValue: string) => ({
-        id: "mode",
-        name: "Mode",
-        category: "mode",
-        type: "select",
-        currentValue,
-        options: ["read-only", "workspace-write", "agent", "agent-full-access"].map((value) => ({
-          value,
-          name: value,
-        })),
+      const replayDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: `t3-acp-registry-mode-${input.agentId}-`,
       });
-      const openWith = Effect.fn("openWith")(function* (input: {
-        readonly agentId: string;
-        readonly runtimeMode: "approval-required" | "full-access";
-        readonly entries: ReadonlyArray<unknown>;
-      }) {
-        const replayDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: `t3-acp-registry-mode-${input.agentId}-`,
-        });
-        const statusPath = path.join(replayDir, "status.json");
-        const transcript = yield* decodeAcpReplayTranscript(
-          {
-            provider: ACP_REGISTRY_PROVIDER,
-            protocol: "acp.ndjson-jsonrpc",
-            version: "1",
-            scenario: `native-mode-${input.agentId}`,
-            entries: [...initialize, ...input.entries] as never,
-          },
-          ACP_REGISTRY_PROVIDER,
-        );
-        const instanceId = ProviderInstanceId.make(`acp-registry-mode-${input.agentId}`);
-        const adapter = makeAcpRegistryAdapterV2({
-          crypto: yield* Crypto.Crypto,
-          selfInvocation: yield* resolveSelfInvocation(),
-          instanceId,
-          settings: yield* decodeAcpRegistryAdapterSettings({
-            agentId: input.agentId,
-            authMethodId: "test",
-          }),
-          environment: {},
+      const statusPath = path.join(replayDir, "status.json");
+      const transcript = yield* decodeAcpReplayTranscript(
+        {
+          provider: ACP_REGISTRY_PROVIDER,
+          protocol: "acp.ndjson-jsonrpc",
+          version: "1",
+          scenario: `native-mode-${input.agentId}-${input.runtimeMode}`,
+          entries: input.entries as never,
+        },
+        ACP_REGISTRY_PROVIDER,
+      );
+      const instanceId = ProviderInstanceId.make(`acp-registry-mode-${input.agentId}`);
+      const adapter = makeAcpRegistryAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        selfInvocation: yield* resolveSelfInvocation(),
+        instanceId,
+        settings: yield* decodeAcpRegistryAdapterSettings({
+          agentId: input.agentId,
+          authMethodId: "test",
+        }),
+        environment: {},
+        childProcessSpawner,
+        fileSystem,
+        idAllocator: yield* IdAllocatorV2,
+        resolver: { resolve: () => Effect.die("the runtime is injected") },
+        serverConfig: yield* ServerConfig,
+        makeRuntime: makeAcpReplayRuntime({
+          transcript,
+          statusPath,
+          scriptPath: yield* path.fromFileUrl(
+            new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
+          ),
           childProcessSpawner,
           fileSystem,
-          idAllocator,
-          resolver: { resolve: () => Effect.die("the runtime is injected") },
-          serverConfig,
-          makeRuntime: makeAcpReplayRuntime({
-            transcript,
-            statusPath,
-            scriptPath,
-            childProcessSpawner,
-            fileSystem,
-          }),
-        });
-        const runtime = yield* adapter.openSession({
+        }),
+      });
+      // Closing the session stops the agent process, which writes its replay
+      // status in the same tick as its last answer, so the status is final.
+      const opened = yield* adapter
+        .openSession({
           threadId: ThreadId.make(`thread-acp-registry-mode-${input.agentId}`),
           providerSessionId: ProviderSessionId.make(`provider-session-mode-${input.agentId}`),
           modelSelection: {
             instanceId,
             model: "default",
-            // A stored pick from the composer must not override the policy.
-            options: [{ id: "mode", value: "agent-full-access" }],
+            ...(input.storedModePick === undefined
+              ? {}
+              : { options: [{ id: "mode", value: input.storedModePick }] }),
           },
           runtimePolicy: ProviderAdapterV2RuntimePolicy.make({
             runtimeMode: input.runtimeMode,
             interactionMode: "default",
             cwd: replayDir,
           }),
-        });
-        yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
-        return runtime.providerSession.capabilities.runtimePolicy.enforcement;
-      });
+        })
+        .pipe(
+          Effect.map((session) => session.providerSession.capabilities.runtimePolicy.enforcement),
+          Effect.scoped,
+          Effect.exit,
+        );
+      // The agent script must be consumed exactly: no missing or extra frames.
+      const consumed = yield* makeAcpReplayCompletenessAssertion(
+        fileSystem,
+        statusPath,
+        transcript,
+      ).pipe(Effect.exit);
+      return {
+        enforcement: Exit.isSuccess(opened) ? opened.value : undefined,
+        failure: Exit.isFailure(opened) ? Cause.pretty(opened.cause) : undefined,
+        consumed: Exit.isSuccess(consumed),
+      };
+    });
 
-      assert.equal(
-        yield* openWith({
+    it.effect("switches each mapped agent to its own mode", () =>
+      Effect.gen(function* () {
+        // One mapping per agent, through the transport each one advertises.
+        const cases = [
+          {
+            agentId: "codex-acp",
+            runtimeMode: "approval-required",
+            setup: {
+              configOptions: [
+                modeOption("agent", ["read-only", "workspace-write", "agent", "agent-full-access"]),
+              ],
+            },
+            frames: [
+              setConfigMode("read-only"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("read-only", ["read-only", "agent"])],
+              }),
+            ],
+          },
+          {
+            agentId: "claude-acp",
+            runtimeMode: "auto-accept-edits",
+            setup: {
+              configOptions: [modeOption("default", ["default", "acceptEdits", "auto"])],
+            },
+            frames: [
+              setConfigMode("acceptEdits"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("acceptEdits", ["default", "acceptEdits"])],
+              }),
+            ],
+          },
+          {
+            agentId: "gemini",
+            runtimeMode: "full-access",
+            setup: { modes: modes("default", ["default", "autoEdit", "yolo"]) },
+            frames: [setMode("yolo"), answer("session/set_mode", {})],
+          },
+          {
+            agentId: "qwen-code",
+            runtimeMode: "auto",
+            setup: {
+              configOptions: [modeOption("default", ["default", "auto-edit", "auto", "yolo"])],
+            },
+            frames: [
+              setConfigMode("auto"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("auto", ["default", "auto"])],
+              }),
+            ],
+          },
+          {
+            // Goose advertises a mode config option but may only handle
+            // session/set_mode; T3 falls back when the config option is refused.
+            agentId: "goose",
+            runtimeMode: "approval-required",
+            setup: {
+              modes: modes("auto", ["auto", "approve", "smart_approve", "chat"]),
+              configOptions: [modeOption("auto", ["auto", "approve", "smart_approve", "chat"])],
+            },
+            frames: [
+              setConfigMode("approve"),
+              reject("session/set_config_option", -32601, "Method not found"),
+              setMode("approve"),
+              answer("session/set_mode", {}),
+            ],
+          },
+          {
+            agentId: "mistral-vibe",
+            runtimeMode: "auto-accept-edits",
+            setup: {
+              configOptions: [modeOption("ask", ["ask", "accept-edits", "auto-approve"])],
+            },
+            frames: [
+              setConfigMode("accept-edits"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("accept-edits", ["ask", "accept-edits"])],
+              }),
+            ],
+          },
+        ] as const;
+        for (const testCase of cases) {
+          const result = yield* openSession({
+            agentId: testCase.agentId,
+            runtimeMode: testCase.runtimeMode,
+            entries: agentScript(testCase.setup, testCase.frames),
+            // A stored composer pick must not override the thread's mode.
+            storedModePick: "agent-full-access",
+          });
+          assert.deepEqual(
+            result,
+            { enforcement: "native", failure: undefined, consumed: true },
+            testCase.agentId,
+          );
+        }
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+    );
+
+    it.effect("refuses to open a stricter thread when the agent cannot switch", () =>
+      Effect.gen(function* () {
+        const codexSetup = (current: string, values: ReadonlyArray<string>) => ({
+          configOptions: [modeOption(current, values)],
+        });
+        const cases = [
+          {
+            name: "mode not advertised",
+            setup: codexSetup("agent", ["agent", "agent-full-access"]),
+            frames: [],
+            reason: "does not offer it",
+          },
+          {
+            name: "mode rejected",
+            setup: codexSetup("agent", ["read-only", "agent"]),
+            frames: [
+              setConfigMode("read-only"),
+              reject("session/set_config_option", -32003, "Folder is not trusted"),
+            ],
+            reason: "refused it (Folder is not trusted)",
+          },
+          {
+            name: "agent stays in its mode",
+            setup: codexSetup("agent", ["read-only", "agent"]),
+            frames: [
+              setConfigMode("read-only"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("agent", ["read-only", "agent"])],
+              }),
+            ],
+            reason: "stayed in 'agent'",
+          },
+        ] as const;
+        for (const testCase of cases) {
+          const strict = yield* openSession({
+            agentId: "codex-acp",
+            runtimeMode: "approval-required",
+            entries: agentScript(testCase.setup, testCase.frames),
+          });
+          assert.isUndefined(strict.enforcement, testCase.name);
+          assert.include(
+            strict.failure ?? "",
+            `Codex could not switch to its 'read-only' mode for this thread's permission mode: it ${testCase.reason}.`,
+            testCase.name,
+          );
+        }
+        // Full access proceeds: any mode the agent stays in is stricter.
+        const loose = yield* openSession({
           agentId: "codex-acp",
-          runtimeMode: "approval-required",
-          entries: [
-            {
-              type: "emit_inbound",
-              frame: {
-                kind: "response",
-                method: "session/new",
-                result: { sessionId: "codex-session", configOptions: [codexModeOption("agent")] },
-              },
-            },
-            {
-              type: "expect_outbound",
-              frame: {
-                kind: "request",
-                method: "session/set_config_option",
-                params: { sessionId: "codex-session", configId: "mode", value: "read-only" },
-              },
-            },
-            {
-              type: "emit_inbound",
-              frame: {
-                kind: "response",
-                method: "session/set_config_option",
-                result: { configOptions: [codexModeOption("read-only")] },
-              },
-            },
-          ],
-        }),
-        "native",
-      );
-      assert.equal(
-        yield* openWith({
-          agentId: "gemini",
           runtimeMode: "full-access",
-          entries: [
-            {
-              type: "emit_inbound",
-              frame: {
-                kind: "response",
-                method: "session/new",
-                result: {
-                  sessionId: "gemini-session",
-                  modes: {
-                    currentModeId: "default",
-                    availableModes: ["default", "autoEdit", "yolo"].map((id) => ({
-                      id,
-                      name: id,
-                    })),
-                  },
-                },
-              },
-            },
-            {
-              type: "expect_outbound",
-              frame: {
-                kind: "request",
-                method: "session/set_mode",
-                params: { sessionId: "gemini-session", modeId: "yolo" },
-              },
-            },
-            {
-              type: "emit_inbound",
-              frame: { kind: "response", method: "session/set_mode", result: {} },
-            },
-          ],
-        }),
-        "native",
-      );
-      // Unmapped agents keep their own mode and T3's client-boundary label.
-      assert.equal(
-        yield* openWith({
+          entries: agentScript(codexSetup("agent", ["read-only", "agent"]), []),
+        });
+        assert.deepEqual(loose, { enforcement: "native", failure: undefined, consumed: true });
+        const looseRejected = yield* openSession({
+          agentId: "codex-acp",
+          runtimeMode: "full-access",
+          entries: agentScript(codexSetup("agent", ["agent", "agent-full-access"]), [
+            setConfigMode("agent-full-access"),
+            reject("session/set_config_option", -32003, "Folder is not trusted"),
+          ]),
+        });
+        assert.deepEqual(looseRejected, {
+          enforcement: "native",
+          failure: undefined,
+          consumed: true,
+        });
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+    );
+
+    it.effect("leaves unmapped agents in their own mode", () =>
+      Effect.gen(function* () {
+        const result = yield* openSession({
           agentId: "fixture-agent",
           runtimeMode: "approval-required",
-          entries: [
-            {
-              type: "emit_inbound",
-              frame: {
-                kind: "response",
-                method: "session/new",
-                result: { sessionId: "fixture-session", configOptions: [codexModeOption("agent")] },
-              },
-            },
-            {
-              type: "expect_outbound",
-              frame: {
-                kind: "request",
-                method: "session/set_config_option",
-                params: {
-                  sessionId: "fixture-session",
-                  configId: "mode",
-                  value: "agent-full-access",
-                },
-              },
-            },
-            {
-              type: "emit_inbound",
-              frame: {
-                kind: "response",
-                method: "session/set_config_option",
-                result: { configOptions: [codexModeOption("agent-full-access")] },
-              },
-            },
-          ],
-        }),
-        "client-boundary",
-      );
-    }).pipe(Effect.provide(testLayer), Effect.scoped),
-  );
+          storedModePick: "agent-full-access",
+          entries: agentScript(
+            { configOptions: [modeOption("agent", ["agent", "agent-full-access"])] },
+            [
+              setConfigMode("agent-full-access"),
+              answer("session/set_config_option", {
+                configOptions: [modeOption("agent-full-access", ["agent", "agent-full-access"])],
+              }),
+            ],
+          ),
+        });
+        assert.deepEqual(result, {
+          enforcement: "client-boundary",
+          failure: undefined,
+          consumed: true,
+        });
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
+    );
+  });
 
   it.effect("offers client terminals to Devin only and client fs to no registry agent", () =>
     Effect.gen(function* () {

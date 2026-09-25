@@ -2,6 +2,12 @@ import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
 
 import { ACP_SESSION_MODE_OPTION_ID } from "./AcpSessionConfig.ts";
 
+interface AcpRegistryPermissionModes {
+  /** Name used in messages when the agent refuses a mode. */
+  readonly name: string;
+  readonly modes: Readonly<Record<RuntimeMode, string>>;
+}
+
 /**
  * Each registry agent's own permission mode for a T3 runtime mode, so the
  * agent enforces the thread's policy with its own sandbox and approvals, as
@@ -11,46 +17,63 @@ import { ACP_SESSION_MODE_OPTION_ID } from "./AcpSessionConfig.ts";
  * `agents/models.py`. Agents without a row keep their own default mode and
  * T3 answers their permission prompts by policy.
  */
-const ACP_REGISTRY_PERMISSION_MODES: Readonly<
-  Record<string, Readonly<Record<RuntimeMode, string>>>
-> = {
+const ACP_REGISTRY_PERMISSION_MODES: Readonly<Record<string, AcpRegistryPermissionModes>> = {
   "codex-acp": {
-    "approval-required": "read-only",
-    "auto-accept-edits": "workspace-write",
-    auto: "agent",
-    "full-access": "agent-full-access",
+    name: "Codex",
+    modes: {
+      "approval-required": "read-only",
+      "auto-accept-edits": "workspace-write",
+      auto: "agent",
+      "full-access": "agent-full-access",
+    },
   },
   "claude-acp": {
-    "approval-required": "default",
-    "auto-accept-edits": "acceptEdits",
-    auto: "auto",
-    "full-access": "bypassPermissions",
+    name: "Claude",
+    modes: {
+      "approval-required": "default",
+      "auto-accept-edits": "acceptEdits",
+      auto: "auto",
+      "full-access": "bypassPermissions",
+    },
   },
   // Gemini has no classifier mode, so auto keeps it asking.
   gemini: {
-    "approval-required": "default",
-    "auto-accept-edits": "autoEdit",
-    auto: "default",
-    "full-access": "yolo",
+    name: "Gemini",
+    modes: {
+      "approval-required": "default",
+      "auto-accept-edits": "autoEdit",
+      auto: "default",
+      "full-access": "yolo",
+    },
   },
   "qwen-code": {
-    "approval-required": "default",
-    "auto-accept-edits": "auto-edit",
-    auto: "auto",
-    "full-access": "yolo",
+    name: "Qwen Code",
+    modes: {
+      "approval-required": "default",
+      "auto-accept-edits": "auto-edit",
+      auto: "auto",
+      "full-access": "yolo",
+    },
   },
-  // Goose has no edits-only mode; smart_approve asks only for sensitive calls.
+  // Goose has no edits-only mode; smart_approve asks only for calls its
+  // classifier deems sensitive.
   goose: {
-    "approval-required": "approve",
-    "auto-accept-edits": "smart_approve",
-    auto: "smart_approve",
-    "full-access": "auto",
+    name: "Goose",
+    modes: {
+      "approval-required": "approve",
+      "auto-accept-edits": "smart_approve",
+      auto: "smart_approve",
+      "full-access": "auto",
+    },
   },
   "mistral-vibe": {
-    "approval-required": "ask",
-    "auto-accept-edits": "accept-edits",
-    auto: "smart-approve",
-    "full-access": "auto-approve",
+    name: "Mistral Vibe",
+    modes: {
+      "approval-required": "ask",
+      "auto-accept-edits": "accept-edits",
+      auto: "smart-approve",
+      "full-access": "auto-approve",
+    },
   },
 };
 
@@ -63,10 +86,12 @@ export function acpRegistryHasNativePermissionModes(agentId: string): boolean {
 export function acpRegistryPermissionMode(
   agentId: string,
   runtimeMode: RuntimeMode,
-): string | undefined {
-  return acpRegistryHasNativePermissionModes(agentId)
-    ? ACP_REGISTRY_PERMISSION_MODES[agentId]?.[runtimeMode]
-    : undefined;
+): { readonly agentName: string; readonly modeId: string } | undefined {
+  if (!acpRegistryHasNativePermissionModes(agentId)) return undefined;
+  const entry = ACP_REGISTRY_PERMISSION_MODES[agentId];
+  return entry === undefined
+    ? undefined
+    : { agentName: entry.name, modeId: entry.modes[runtimeMode] };
 }
 
 /**
