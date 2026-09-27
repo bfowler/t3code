@@ -118,6 +118,26 @@ it.effect("sends no late snapshot when the scan matches the snapshot", () =>
   }),
 );
 
+it.effect("resends a file manager reveal kind that missed the snapshot", () =>
+  Effect.gen(function* () {
+    const events = yield* withLateEditorConfig(
+      snapshotConfig({ availableEditors: ["file-manager"] }),
+      Stream.empty,
+      {
+        resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
+        resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
+      },
+    ).pipe(Stream.runCollect);
+
+    const [late] = Array.from(events);
+    assert.equal(events.length, 1);
+    assert.equal(late?.type, "snapshot");
+    if (late?.type === "snapshot") {
+      assert.equal(late.config.shellRevealInFileManagerKind, "file-explorer");
+    }
+  }),
+);
+
 it.effect("recovers editors after a real scan outlasts the config timeout", () =>
   Effect.gen(function* () {
     const scanParked = yield* Deferred.make<void>();

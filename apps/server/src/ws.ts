@@ -290,10 +290,11 @@ const resolveEditorConfig = (
 
 /**
  * Live config updates that follow a snapshot of `config`. A busy host can
- * outlast the snapshot's discovery timeout, which sends no editors. The scan
- * keeps running, so once it lands this resends the config: clients replace
- * theirs on any snapshot. The resent config is folded from the live updates
- * already sent, so it cannot roll back a change that landed while the scan ran.
+ * outlast the snapshot's discovery timeouts, which send no editors, or no
+ * reveal kind for the file manager. The scan keeps running, so once it lands
+ * this resends the config: clients replace theirs on any snapshot. The resent
+ * config is folded from the live updates already sent, so it cannot roll back
+ * a change that landed while the scan ran.
  */
 export const withLateEditorConfig = <E, R>(
   config: ClientServerConfig,
@@ -301,8 +302,17 @@ export const withLateEditorConfig = <E, R>(
   launcher: EditorDiscovery,
 ) => {
   const lateEditorConfig = Stream.fromEffect(launcher.resolveAvailableEditors()).pipe(
-    Stream.filter((editors) => editors.join() !== config.availableEditors.join()),
+    Stream.filter(
+      (editors) =>
+        editors.join() !== config.availableEditors.join() ||
+        (editors.includes("file-manager") && config.shellRevealInFileManagerKind === undefined),
+    ),
     Stream.mapEffect((editors) => resolveEditorConfig(launcher, editors)),
+    Stream.filter(
+      (editorConfig) =>
+        editorConfig.availableEditors.join() !== config.availableEditors.join() ||
+        editorConfig.shellRevealInFileManagerKind !== config.shellRevealInFileManagerKind,
+    ),
     Stream.map((editorConfig) => ({ type: "editorsResolved" as const, editorConfig })),
   );
 
