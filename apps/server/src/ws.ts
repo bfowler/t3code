@@ -269,13 +269,13 @@ type EditorDiscovery = Pick<
 >;
 
 // The config fields that follow from which editors are installed.
-const resolveEditorConfig = (
-  launcher: EditorDiscovery,
+const resolveEditorConfig = <E, R>(
   availableEditors: ReadonlyArray<EditorId>,
+  revealKind: Effect.Effect<FileManagerRevealKind | undefined, E, R>,
 ) =>
   Effect.gen(function* () {
     const fileManagerRevealKind = availableEditors.includes("file-manager")
-      ? yield* resolveFileManagerRevealKindForConfig(launcher.resolveFileManagerRevealKind())
+      ? yield* revealKind
       : undefined;
     return {
       availableEditors,
@@ -307,7 +307,11 @@ export const withLateEditorConfig = <E, R>(
         editors.join() !== config.availableEditors.join() ||
         (editors.includes("file-manager") && config.shellRevealInFileManagerKind === undefined),
     ),
-    Stream.mapEffect((editors) => resolveEditorConfig(launcher, editors)),
+    // Unbounded, unlike the snapshot: the reveal-kind probe is not shared, so
+    // a timeout here would cancel a probe that outlasts it every time.
+    Stream.mapEffect((editors) =>
+      resolveEditorConfig(editors, launcher.resolveFileManagerRevealKind()),
+    ),
     Stream.filter(
       (editorConfig) =>
         editorConfig.availableEditors.join() !== config.availableEditors.join() ||
@@ -1707,8 +1711,8 @@ const makeWsRpcLayer = (
           const auth = yield* serverAuth.getDescriptor();
           const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
           const editorConfig = yield* resolveEditorConfig(
-            externalLauncher,
             yield* resolveAvailableEditorsForConfig(externalLauncher.resolveAvailableEditors()),
+            resolveFileManagerRevealKindForConfig(externalLauncher.resolveFileManagerRevealKind()),
           );
 
           return {

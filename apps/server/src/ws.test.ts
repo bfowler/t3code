@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -138,50 +139,58 @@ it.effect("resends a file manager reveal kind that missed the snapshot", () =>
   }),
 );
 
-it.effect("recovers editors after a real scan outlasts the config timeout", () =>
-  Effect.gen(function* () {
-    const scanParked = yield* Deferred.make<void>();
-    const releaseScan = yield* Deferred.make<void>();
-    // The real launcher over a filesystem whose probes park until released,
-    // like a host too busy to finish discovery inside the snapshot timeout.
-    const launcher = yield* ExternalLauncher.make.pipe(
+// The real launcher on Windows over a filesystem whose probes park until
+// released, like a host too busy to finish discovery inside the snapshot timeout.
+const makeParkedWindowsLauncher = Effect.gen(function* () {
+  const parkedProbes = yield* Queue.unbounded<void>();
+  const release = yield* Deferred.make<void>();
+  const launcher = yield* ExternalLauncher.make.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        FileSystem.layerNoop({
+          stat: () =>
+            Queue.offer(parkedProbes, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as({ type: "File" } as FileSystem.File.Info),
+            ),
+        }),
+        Path.layer,
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+        ),
+      ),
+    ),
+  );
+  const onWindows = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
       Effect.provide(
-        Layer.mergeAll(
-          FileSystem.layerNoop({
-            stat: () =>
-              Deferred.succeed(scanParked, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseScan)),
-                Effect.as({ type: "File" } as FileSystem.File.Info),
-              ),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: { PATH: "C:\\t3-late-editors-test", PATHEXT: ".EXE" },
           }),
-          Path.layer,
-          Layer.succeed(
-            ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
-          ),
         ),
       ),
     );
-    const onWindows = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.provideService(HostProcessPlatform, "win32"),
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: { PATH: "C:\\t3-late-editors-test", PATHEXT: ".EXE" },
-            }),
-          ),
-        ),
-      );
-    const editors = {
+  return {
+    editors: {
       resolveAvailableEditors: () => onWindows(launcher.resolveAvailableEditors()),
       resolveFileManagerRevealKind: () => onWindows(launcher.resolveFileManagerRevealKind()),
-    };
+    },
+    probeParked: Queue.take(parkedProbes),
+    releaseProbes: Deferred.succeed(release, undefined),
+  };
+});
+
+it.effect("recovers editors after a real scan outlasts the config timeout", () =>
+  Effect.gen(function* () {
+    const { editors, probeParked, releaseProbes } = yield* makeParkedWindowsLauncher;
 
     const snapshotFiber = yield* resolveAvailableEditorsForConfig(
       editors.resolveAvailableEditors(),
     ).pipe(Effect.forkChild);
-    yield* Deferred.await(scanParked);
+    yield* probeParked;
     yield* TestClock.adjust(Duration.seconds(5));
     const snapshotEditors = yield* Fiber.join(snapshotFiber);
     assert.deepEqual(snapshotEditors, []);
@@ -191,12 +200,37 @@ it.effect("recovers editors after a real scan outlasts the config timeout", () =
       Stream.empty,
       editors,
     ).pipe(Stream.runCollect, Effect.forkChild);
-    yield* Deferred.succeed(releaseScan, undefined);
+    yield* releaseProbes;
 
     const [late] = Array.from(yield* Fiber.join(lateFiber));
     assert.equal(late?.type, "snapshot");
     if (late?.type === "snapshot") {
       assert.equal(late.config.availableEditors.includes("vscode"), true);
+    }
+  }).pipe(Effect.scoped),
+);
+
+it.effect("recovers a reveal kind whose real probe outlasts the config timeout", () =>
+  Effect.gen(function* () {
+    const { editors, probeParked, releaseProbes } = yield* makeParkedWindowsLauncher;
+
+    // The snapshot's bounded probe timed out: file manager, but no reveal kind.
+    const lateFiber = yield* withLateEditorConfig(
+      snapshotConfig({ availableEditors: ["file-manager"] }),
+      Stream.empty,
+      {
+        resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
+        resolveFileManagerRevealKind: editors.resolveFileManagerRevealKind,
+      },
+    ).pipe(Stream.runCollect, Effect.forkChild);
+    yield* probeParked;
+    yield* TestClock.adjust(Duration.seconds(6));
+    yield* releaseProbes;
+
+    const [late] = Array.from(yield* Fiber.join(lateFiber));
+    assert.equal(late?.type, "snapshot");
+    if (late?.type === "snapshot") {
+      assert.equal(late.config.shellRevealInFileManagerKind, "file-explorer");
     }
   }).pipe(Effect.scoped),
 );
